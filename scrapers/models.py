@@ -1,7 +1,7 @@
 """Data models shared across all scrapers."""
 
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 
 
@@ -17,7 +17,7 @@ class Product:
     enseigne: str = ""
     category: str = ""
     sku: str = ""
-    scraped_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    scraped_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> dict:
         return asdict(self)

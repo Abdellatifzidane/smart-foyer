@@ -13,18 +13,12 @@ Usage :
 import argparse
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config import OUTPUT_DIR, get_logger
 from models import Product
 
 log = get_logger("runner")
-
-
-def run_carrefour(max_products: int) -> list[Product]:
-    from scraper_carrefour import run
-    max_pages = max(1, max_products // 20) if max_products > 0 else 3
-    return run(max_pages=max_pages)
 
 
 def run_monoprix(max_products: int) -> list[Product]:
@@ -34,11 +28,10 @@ def run_monoprix(max_products: int) -> list[Product]:
 
 def run_lidl(max_products: int) -> list[Product]:
     from scraper_lidl import run
-    return run(mode="sitemap", max_products=max_products)
+    return run(max_products=max_products)
 
 
 RETAILERS = {
-    "carrefour": run_carrefour,
     "monoprix": run_monoprix,
     "lidl": run_lidl,
 }
@@ -47,7 +40,7 @@ RETAILERS = {
 def merge_results(all_products: list[Product]):
     """Merge all products into a single JSON file."""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     filepath = os.path.join(OUTPUT_DIR, f"all_products_{timestamp}.json")
 
     data = [p.to_dict() for p in all_products]

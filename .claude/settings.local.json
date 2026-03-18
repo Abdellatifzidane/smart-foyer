@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.carrefour.fr)",
+      "WebFetch(domain:www.lidl.fr)",
+      "WebFetch(domain:www.e.leclerc)",
+      "WebFetch(domain:www.monoprix.fr)",
+      "WebFetch(domain:www.franprix.fr)",
+      "WebFetch(domain:www.auchan.fr)",
+      "WebFetch(domain:www.intermarche.com)",
+      "WebFetch(domain:www.casino.fr)",
+      "WebFetch(domain:www.geantcasino.fr)",
+      "WebFetch(domain:www.picard.fr)",
+      "WebFetch(domain:www.cora.fr)",
+      "WebFetch(domain:www.g20.fr)",
+      "WebFetch(domain:www.coursesu.com)",
+      "WebFetch(domain:www.biocoop.fr)",
+      "WebFetch(domain:www.naturalia.fr)",
+      "Bash(curl -s -I https://www.franprix.fr/robots.txt)",
+      "Bash(curl -s -I https://www.intermarche.com/robots.txt)",
+      "WebFetch(domain:petitcasino.casino.fr)",
+      "Bash(curl -s https://www.franprix.fr/robots.txt)",
+      "Bash(curl -s https://www.coursesu.com/robots.txt)",
+      "Bash(curl -I https://www.naturalia.fr/robots.txt)",
+      "Bash(curl -s https://www.intermarche.com/robots.txt)"
+    ]
+  }
+}
