@@ -3,3 +3,10 @@ __pycache__/
 *.pyc
 data/
 .env
+.DS_Store
+
+# Datasets (volumineux, telecharges separement)
+SROIE2019/
+
+# Modeles PaddleOCR (telecharges automatiquement)
+.paddleocr/

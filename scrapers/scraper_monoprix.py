@@ -15,6 +15,8 @@ Usage :
   python scraper_monoprix.py --category "cafe"
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
