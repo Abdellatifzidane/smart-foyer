@@ -4,7 +4,7 @@ import logging
 import time
 
 # ─── Rate Limiting ───────────────────────────────────────────────
-CRAWL_DELAY = 3  # seconds between requests (ethical scraping)
+CRAWL_DELAY = 1  # seconds between requests (ethical scraping)
 REQUEST_TIMEOUT = 30  # seconds
 
 # ─── User Agent ──────────────────────────────────────────────────

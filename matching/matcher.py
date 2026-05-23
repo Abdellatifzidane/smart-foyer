@@ -12,6 +12,7 @@ Usage:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, asdict
 
 from matching.embeddings import Embedder
@@ -47,9 +48,13 @@ class Matcher:
         index = ProductIndex.load(index_prefix, embedder)
         return cls(index=index)
 
-    def compare_item(self, item: LineItem, k: int = 5, min_score: float = 0.7) -> ItemComparison:
+    def compare_item(self, item: LineItem, k: int = 5, min_score: float = 0.6) -> ItemComparison:
         """Find the best catalog match for one item and list cheaper alternatives."""
-        hits = self.index.search(item.name, k=k, min_score=min_score)
+        # Receipts come out of OCR in uppercase with abbreviations. Lowercase
+        # them before embedding so the model behaves like on natural product
+        # names (PANZANI PENNE RIGATE -> panzani penne rigate).
+        query = _normalize_for_search(item.name)
+        hits = self.index.search(query, k=k, min_score=min_score)
 
         if not hits:
             return ItemComparison(
@@ -86,6 +91,21 @@ class Matcher:
             savings=round(max((best_price - min((c["price"] for c in cheaper), default=best_price)), 0), 2),
         )
 
-    def compare(self, receipt: Receipt, k: int = 5, min_score: float = 0.7) -> list[ItemComparison]:
+    def compare(self, receipt: Receipt, k: int = 5, min_score: float = 0.6) -> list[ItemComparison]:
         """Compare every line item of a receipt."""
         return [self.compare_item(item, k=k, min_score=min_score) for item in receipt.items]
+
+
+def _normalize_for_search(name: str) -> str:
+    """Make a receipt line look like a natural product name.
+
+    Receipts come out of OCR as uppercase, with abbreviations and tag suffixes.
+    Lowercasing helps a lot because the embedding model was trained on
+    naturally-cased text. We also strip trailing TVA-category tags (' A', ' B').
+    """
+    if not name:
+        return ""
+    s = name.strip()
+    # Drop trailing single letters used as TVA category tags ("... A", "... B")
+    s = re.sub(r"\s+[A-Z]$", "", s)
+    return s.lower()

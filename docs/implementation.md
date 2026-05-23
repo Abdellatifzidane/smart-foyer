@@ -1,332 +1,325 @@
-# SmartFoyer — Documentation d'implémentation
+# SmartFoyer — Documentation technique de A à Z
 
-Ce document décrit **ce qui a été développé** dans le projet SmartFoyer, étape par étape. L'objectif : qu'une personne qui découvre le projet comprenne directement la chaîne complète, du ticket photographié jusqu'à la comparaison de prix.
+Ce document décrit **l'intégralité** de ce qui a été développé dans le projet SmartFoyer, comment chaque pièce fonctionne, comment la lancer, et ce qu'il reste à faire pour atteindre la vision finale (app mobile native + déploiement GCP).
 
----
-
-## Vue d'ensemble
-
-SmartFoyer transforme une **photo de ticket de caisse** en données structurées exploitables, puis compare les prix entre enseignes. Le pipeline est découpé en 4 modules indépendants :
-
-```
-Photo ticket
-    │
-    ▼
-[ 1. OCR ]            → texte brut extrait
-    │
-    ▼
-[ 2. NER (LLM) ]      → données structurées (enseigne, total, produits…)
-    │
-    ▼
-[ 3. Matching ]       → comparaison avec le catalogue scrapé
-    │
-    ▼
-Résultat affiché dans l'app
-```
-
-L'utilisateur final accède à tout ça via :
-
-```
-[ 4. Backend FastAPI ] ⇄ [ 5. App Flutter Web ]
-```
+Cible : un développeur qui veut reprendre le projet là où on l'a laissé.
 
 ---
 
-## Étape 1 — OCR (extraction du texte)
+## 1. Vision et architecture cible
 
-### C'est quoi ?
+SmartFoyer est une application mobile qui permet de :
+1. Scanner un ticket de caisse (photo)
+2. Extraire automatiquement les produits, prix, enseigne, total
+3. Comparer les prix avec un catalogue scrapé d'autres enseignes
+4. Conserver l'historique des courses
+5. Interroger un agent IA conversationnel sur ses dépenses
 
-L'**OCR** (Optical Character Recognition) lit une image et en extrait le texte. C'est la première brique : sans le texte du ticket, on ne peut rien faire.
+L'architecture cible (GCP) est décrite dans le [README principal](../README.md). Le POC actuel implémente la même logique en local.
 
-### Quoi utilisé : **PaddleOCR**
-
-[PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) est une bibliothèque open source de Baidu basée sur du deep learning. On l'a choisie pour :
-
-- Excellente qualité (95% de confiance sur le dataset SROIE2019)
-- **Support natif du français et de l'anglais**
-- Détection automatique de l'orientation (ticket photographié de travers)
-- Modèles téléchargés automatiquement la première fois
-
-### Comment c'est implémenté
-
-Un wrapper Python encapsule PaddleOCR pour exposer une API simple :
-
-```python
-ocr = ReceiptOCR(lang="fr")
-result = ocr.extract("ticket.jpg")
-print(result.text)             # texte brut, ligne par ligne
-print(result.avg_confidence)   # confiance moyenne (0–1)
+```
+┌──────────────┐     ┌──────────────────────────────────┐
+│ App Flutter  │ ⇄ │  Backend FastAPI (local)         │
+│ Web / Mobile │     │  ┌────────────┐ ┌─────────────┐ │
+└──────────────┘     │  │ OCR        │ │ NER (LLM)   │ │
+                     │  └────────────┘ └─────────────┘ │
+                     │  ┌────────────┐ ┌─────────────┐ │
+                     │  │ Matching   │ │ Chat RAG    │ │
+                     │  └────────────┘ └─────────────┘ │
+                     │  ┌────────────┐ ┌─────────────┐ │
+                     │  │ Persistance│ │ Catalogue   │ │
+                     │  │ JSON       │ │ FAISS       │ │
+                     │  └────────────┘ └─────────────┘ │
+                     └──────────────────────────────────┘
+                                  │
+                  ┌────────────────┴───────────────┐
+                  │ Sources externes                │
+                  │  - Scrapers Monoprix / Lidl     │
+                  │  - LLM Ollama (llama3.1:8b)     │
+                  └─────────────────────────────────┘
 ```
 
-En sortie, on obtient un objet `OCRResult` qui contient :
-- `text` : le texte concaténé
-- `lines` : la liste des lignes détectées avec leur score de confiance et leur position (bounding box)
+---
 
-### Fichiers ajoutés
+## 2. Arborescence du projet
 
-| Fichier | Rôle |
-|---|---|
-| `ocr/__init__.py` | Marqueur de module Python |
-| `ocr/paddle_ocr.py` | Classe `ReceiptOCR` + dataclasses `OCRResult`, `OCRLine` |
-| `ocr/test_sroie.py` | Script CLI : teste l'OCR sur le dataset SROIE2019 et compare au ground truth |
+```
+smart-foyer/
+├── README.md                  ← Pitch projet + roadmap initiale
+├── requirements.txt           ← Dépendances Python
+│
+├── scrapers/                  ← Récupération du catalogue produits
+│   ├── config.py              ← USER_AGENT, CRAWL_DELAY, OUTPUT_DIR
+│   ├── filters.py             ← Liste de mots-clés non-alimentaires
+│   ├── models.py              ← Dataclass Product
+│   ├── scraper_monoprix.py    ← Scraping courses.monoprix.fr (JSON-LD)
+│   ├── scraper_lidl.py        ← Scraping lidl.fr (sitemap gzip + JSON-LD)
+│   └── run_all.py             ← Orchestrateur multi-scrapers
+│
+├── ocr/                       ← Extraction de texte depuis l'image
+│   ├── paddle_ocr.py          ← Wrapper PaddleOCR 3.x
+│   └── test_sroie.py          ← Évaluation sur le dataset SROIE2019
+│
+├── ner/                       ← Extraction structurée via LLM
+│   ├── models.py              ← Receipt + LineItem (extensible)
+│   ├── prompt.py              ← Prompt système + schéma JSON
+│   ├── extractor.py           ← Wrapper Ollama
+│   └── test_sroie.py          ← Pipeline OCR + NER sur SROIE2019
+│
+├── matching/                  ← Comparaison sémantique des produits
+│   ├── embeddings.py          ← sentence-transformers (multilingue)
+│   ├── index.py               ← Index FAISS (build, save, load, search)
+│   ├── matcher.py             ← Compare un Receipt au catalogue
+│   ├── build_index.py         ← CLI : construit l'index depuis data/*.json
+│   ├── test_matching.py       ← Test avec requêtes exemples
+│   └── test_intermarche.py    ← Test sur un ticket Intermarché réel
+│
+├── backend/                   ← API HTTP (FastAPI)
+│   ├── main.py                ← Endpoints : /scan, /history, /chat, ...
+│   ├── chat.py                ← Agent RAG : contexte + appel LLM
+│   └── seed_demo.py           ← Génère des tickets factices pour démo
+│
+├── smart_foyer_app/           ← App Flutter (Web pour l'instant)
+│   ├── pubspec.yaml
+│   └── lib/
+│       ├── main.dart
+│       ├── api/
+│       │   ├── api_client.dart    ← Client HTTP vers le backend
+│       │   └── models.dart        ← Modèles Dart (Receipt, ...)
+│       └── screens/
+│           ├── home_screen.dart      ← Accueil + 3 boutons
+│           ├── scan_screen.dart      ← Upload image + analyse
+│           ├── results_screen.dart   ← Affichage ticket + comparaisons
+│           ├── history_screen.dart   ← Liste des tickets + stats
+│           └── chat_screen.dart      ← Agent IA conversationnel
+│
+├── data/                      ← Données générées (gitignored)
+│   ├── monoprix_products.json    ← ~2800 produits scrapés
+│   ├── lidl_products.json        ← ~3200 produits scrapés (food only)
+│   ├── index/                    ← Index FAISS + métadonnées
+│   ├── receipts/                 ← Tickets scannés + tickets démo
+│   ├── ocr_results/              ← Sorties des tests OCR
+│   └── ner_results/              ← Sorties des tests NER
+│
+└── docs/
+    ├── implementation.md         ← Ce document
+    ├── guide-scrapers.md
+    └── scraping-feasibility.md
+```
 
-### Comment tester
+---
 
+## 3. Étape par étape : ce qui a été construit
+
+### 3.1 Scrapers (déjà existants, améliorés)
+
+**Objectif** : construire un catalogue produits/prix pour la comparaison.
+
+**Ce qui a été fait**
+- Scraper [Monoprix](../scrapers/scraper_monoprix.py) : utilise le sitemap de `courses.monoprix.fr` et extrait le JSON-LD de chaque page produit. ~26 000 produits disponibles, on en a scrapé ~2800.
+- Scraper [Lidl](../scrapers/scraper_lidl.py) : sitemap gzippé. ~10 000 URLs, on en a scrapé ~3200 produits alimentaires (après filtrage).
+- **Sauvegarde incrémentale** ajoutée : `save_products` est appelé tous les 100 produits → on peut interrompre à tout moment sans perdre de progression.
+- **Filtre alimentaire** : [scrapers/filters.py](../scrapers/filters.py) contient une liste de mots-clés non-alimentaires (chaussures, valise, couette, bougie, etc.). Le filtre normalise les tirets (`siège-auto` → `siège auto`) pour ne rien rater.
+
+**Lancer un scrape**
+```bash
+source .venv/bin/activate
+python scrapers/scraper_monoprix.py --max-products 3000
+python scrapers/scraper_lidl.py --max-products 6000
+```
+
+**Empêcher la veille du Mac pendant un long scrape**
+```bash
+# Terminal séparé
+caffeinate -i
+```
+
+### 3.2 OCR — PaddleOCR
+
+**Objectif** : transformer une photo de ticket en texte brut.
+
+**Choix techniques**
+- **PaddleOCR 3.x** (open source, Baidu)
+- Modèles français + détection automatique d'orientation activée
+- Mise à l'échelle automatique des grandes images (max 1600px) pour économiser la RAM
+
+**Fichiers clés**
+- [ocr/paddle_ocr.py](../ocr/paddle_ocr.py) — Classe `ReceiptOCR` + dataclasses `OCRResult` / `OCRLine`
+- [ocr/test_sroie.py](../ocr/test_sroie.py) — Évaluation sur SROIE2019
+
+**Tester**
 ```bash
 python -m ocr.test_sroie --n 5
 ```
 
----
+**Performance constatée**
+- 93-95% de confiance sur photos correctes
+- Auto-rotation efficace sur tickets photographiés à 90°
+- Encore sensible aux photos très floues / mal éclairées
 
-## Étape 2 — NER (extraction structurée via LLM)
+### 3.3 NER — Ollama + llama3.1:8b
 
-### C'est quoi ?
+**Objectif** : extraire les entités du ticket (enseigne, total, date, produits, prix).
 
-Le texte brut de l'OCR n'est pas exploitable tel quel. Il faut **extraire les entités** : nom de l'enseigne, date, total, produits, prix, quantités. C'est ce qu'on appelle le **NER** (Named Entity Recognition).
+**Choix techniques**
+- **Pas de modèle NER classique** (spaCy, CamemBERT fine-tuné) car nécessite des centaines de tickets annotés à la main.
+- **LLM en zero-shot** : Ollama tourne en local, llama3.1:8b est gratuit, données privées.
+- Mode `format="json"` d'Ollama → force le modèle à produire du JSON valide.
+- Température 0.0 → résultats reproductibles.
 
-### Quoi utilisé : **Ollama + llama3.1:8b**
+**Fichiers clés**
+- [ner/models.py](../ner/models.py) — `Receipt` et `LineItem`. **Pour ajouter un champ** : 1 ligne ici + 1 ligne dans `prompt.py`.
+- [ner/prompt.py](../ner/prompt.py) — Prompt système avec règles métier : ignorer codes-barres, distinguer "Total Alimentaire" de "TOTAL A PAYER", etc.
+- [ner/extractor.py](../ner/extractor.py) — Classe `OllamaExtractor`
 
-Plutôt qu'un modèle NER classique (qui demande des centaines de tickets annotés à la main pour l'entraînement), on utilise un **LLM en zero-shot** :
+**Prérequis**
+```bash
+# Une seule fois
+brew install ollama
+ollama pull llama3.1:8b
 
-- **Ollama** : moteur d'exécution de LLMs **en local** (gratuit, données privées, pas d'appel à une API cloud).
-- **llama3.1:8b** : LLM open source de Meta, 8 milliards de paramètres, ~5 Go sur disque. Tourne en local sur CPU.
-
-### Comment c'est implémenté
-
-On envoie le texte OCR à llama3.1 avec un **prompt structuré** qui demande explicitement un JSON. Ollama supporte un mode `format="json"` qui force le modèle à produire du JSON valide. On parse ensuite ce JSON en objet `Receipt`.
-
-**Schéma JSON renvoyé par le LLM** :
-
-```json
-{
-  "enseigne": "Intermarché",
-  "date": "2025-05-17",
-  "total": 22.03,
-  "items": [
-    { "name": "PANZANI PENNE RIGATE", "price": 1.24, "quantity": 1 },
-    { "name": "OEUFS BIO X4", "price": 2.35, "quantity": 1 }
-  ]
-}
+# À chaque session
+ollama serve  # dans un terminal séparé
 ```
 
-### Pourquoi cette approche est extensible
-
-Pour **ajouter un champ** (ex: adresse, mode de paiement, catégorie produit), il suffit de :
-
-1. Ajouter une ligne dans `ner/models.py` :
-   ```python
-   address: str = ""
-   ```
-2. Ajouter une ligne dans `ner/prompt.py` :
-   ```
-   "address": "Store address. String."
-   ```
-
-Le pipeline le récupère automatiquement.
-
-### Fichiers ajoutés
-
-| Fichier | Rôle |
-|---|---|
-| `ner/__init__.py` | Marqueur de module |
-| `ner/models.py` | Dataclasses `Receipt` et `LineItem` (un seul endroit pour ajouter des champs) |
-| `ner/prompt.py` | Prompt système + schéma JSON envoyé au LLM |
-| `ner/extractor.py` | Classe `OllamaExtractor` : appelle Ollama et parse le JSON |
-| `ner/test_sroie.py` | Pipeline complet OCR → NER sur SROIE2019, avec comparaison aux entités ground truth |
-
-### Comment tester
-
+**Tester end-to-end (OCR + NER)**
 ```bash
-ollama serve &           # démarre le service Ollama
-ollama pull llama3.1:8b  # télécharge le modèle (une seule fois, ~5 Go)
 python -m ner.test_sroie --n 3
 ```
 
----
+### 3.4 Matching — sentence-transformers + FAISS
 
-## Étape 3 — Matching sémantique (FAISS + embeddings)
+**Objectif** : trouver dans le catalogue scrapé le produit correspondant à chaque ligne du ticket.
 
-### C'est quoi ?
+**Choix techniques**
+- **Embeddings** : modèle `paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions, multilingue FR/EN, ~470 MB).
+- **FAISS** : `IndexFlatIP` (produit scalaire) avec vecteurs L2-normalisés → équivaut à la similarité cosinus.
+- **Seuil de match** : 0.6 (compromis entre recall et précision).
+- **Normalisation du texte avant recherche** : passage en minuscules, suppression du tag TVA en fin (` A`, ` B`). Sinon `PANZANI PENNE RIGATE` (uppercase OCR) match moins bien que `panzani penne rigate`.
+- **Exclusion des produits prix=0** lors du build de l'index (ruptures de stock du scrape).
 
-Le ticket dit `PANZANI PENNE RIGATE`. Le catalogue scrapé dit `Panzani Penne Rigate Pâtes 500g`. Ce sont **les mêmes pâtes**, mais le texte ne match pas exactement. Il faut une comparaison qui comprend le **sens**, pas juste les caractères.
+**Fichiers clés**
+- [matching/embeddings.py](../matching/embeddings.py) — Classe `Embedder`
+- [matching/index.py](../matching/index.py) — Construction, sauvegarde, chargement, recherche
+- [matching/matcher.py](../matching/matcher.py) — Compare un `Receipt` complet, retourne des `ItemComparison`
+- [matching/build_index.py](../matching/build_index.py) — CLI pour (re)construire l'index
 
-C'est le rôle du **matching sémantique**.
-
-### Quoi utilisé : **sentence-transformers + FAISS**
-
-- **sentence-transformers** (modèle `paraphrase-multilingual-MiniLM-L12-v2`) : convertit chaque texte en un **vecteur de 384 nombres** qui capture son sens. Deux textes au sens proche → vecteurs proches.
-- **FAISS** (Facebook AI Similarity Search) : stocke des milliers de vecteurs et trouve les plus proches **en quelques millisecondes**.
-
-### Comment ça fonctionne concrètement
-
-```
-1. Pour chaque produit scrapé du catalogue :
-   "Panzani Penne Rigate 500g" → vecteur [0.12, -0.34, 0.78, ...]
-
-2. On stocke tous ces vecteurs dans un index FAISS (sur disque).
-
-3. Au moment du scan :
-   "PANZANI PENNE RIGATE" → vecteur [0.13, -0.32, 0.77, ...]
-
-4. FAISS retourne les 5 produits du catalogue dont le vecteur est le plus proche.
-
-5. Pour chaque match, on récupère le prix et l'enseigne → on peut comparer.
-```
-
-### Comment c'est implémenté
-
-L'index FAISS est **construit une seule fois** à partir des fichiers JSON produits par les scrapers, puis sauvegardé. Au runtime, on le charge en mémoire et on l'interroge.
-
-```python
-# Construction (une fois)
-index = ProductIndex.build(products, embedder)
-index.save("data/index/catalog")
-
-# Utilisation (chaque scan)
-matcher = Matcher.from_disk("data/index/catalog")
-comparisons = matcher.compare(receipt)
-```
-
-### Fichiers ajoutés
-
-| Fichier | Rôle |
-|---|---|
-| `matching/__init__.py` | Marqueur de module |
-| `matching/embeddings.py` | Classe `Embedder` (wrapper sentence-transformers) |
-| `matching/index.py` | Classe `ProductIndex` : construction, sauvegarde, chargement, recherche FAISS |
-| `matching/matcher.py` | Classe `Matcher` : compare un `Receipt` complet et propose des alternatives moins chères |
-| `matching/build_index.py` | CLI : construit l'index depuis les fichiers `*_products.json` des scrapers |
-| `matching/test_matching.py` | CLI : teste l'index avec des requêtes type ticket |
-
-### Comment tester
-
+**Construire l'index**
 ```bash
-# 1. Scraper des produits (si pas déjà fait)
-python scrapers/scraper_monoprix.py --max-products 200
-python scrapers/scraper_lidl.py --max-products 200
-
-# 2. Construire l'index
-python -m matching.build_index --input scrapers/data
-
-# 3. Tester
-python -m matching.test_matching
+python -m matching.build_index --input data
 ```
 
----
+**Tester**
+```bash
+python -m matching.test_matching                  # requêtes exemples
+python -m matching.test_intermarche               # vrai ticket Intermarché
+```
 
-## Étape 4 — Backend HTTP (FastAPI)
+### 3.5 Backend FastAPI
 
-### Pourquoi un backend ?
+**Objectif** : exposer le pipeline en HTTP pour l'app Flutter.
 
-Le pipeline Python (OCR + NER + Matching) tourne **localement sur la machine**. Pour qu'une app mobile/web puisse l'utiliser, il faut une **API HTTP** qui expose le pipeline.
-
-### Quoi utilisé : **FastAPI + uvicorn**
-
-- **FastAPI** : framework HTTP Python moderne, simple, performant, génère de la doc automatique.
-- **uvicorn** : serveur ASGI qui exécute FastAPI.
-
-### Endpoints exposés
+**Endpoints**
 
 | Méthode | URL | Rôle |
 |---|---|---|
-| `GET`  | `/` | Health check (le backend est-il vivant ?) |
-| `GET`  | `/catalog/stats` | Nombre de produits dans l'index, ventilation par enseigne |
-| `POST` | `/scan` | Upload d'une image → renvoie le pipeline complet en JSON |
+| GET  | `/`                  | Health check |
+| GET  | `/catalog/stats`     | Nombre de produits indexés, par enseigne |
+| POST | `/scan`              | Upload image → JSON complet (OCR + NER + matching) |
+| GET  | `/history`           | Liste de tous les tickets stockés (résumés) |
+| GET  | `/history/stats`     | Agrégations (total, par enseigne, par mois) |
+| GET  | `/history/{id}`      | Détails complets d'un ticket |
+| POST | `/chat`              | Agent IA : question → réponse |
 
-Le endpoint `/scan` enchaîne :
-1. Redimensionnement de l'image si elle est trop grande (limite RAM)
-2. OCR via PaddleOCR
-3. NER via Ollama
-4. Matching via FAISS
-5. Retour d'un JSON consolidé
+**Persistance**
+- Chaque `/scan` réussi est sauvegardé en `data/receipts/{id}.json` automatiquement.
+- L'`id` est un UUID court, retourné dans la réponse pour permettre la navigation.
+- Format identique à la réponse `/scan` → on peut recharger un ancien ticket sur l'écran de résultats.
 
-### Particularités
-
-- **CORS activé** : l'app Flutter Web peut appeler le backend depuis n'importe quelle origine.
-- **Lazy-loading des modèles** : OCR, embedder et FAISS sont chargés au premier appel, pas au démarrage → démarrage plus rapide.
+**Particularités techniques**
+- **CORS ouvert** (`*`) pour permettre les appels depuis Flutter Web.
+- **Lazy loading** des modèles ML (OCR, embedder, FAISS) → démarrage rapide.
 - **Singletons** : les modèles restent en mémoire entre les requêtes.
+- **Resize automatique** des images > 1600px avant OCR pour limiter la RAM (problème sur MacBook 8 Go).
 
-### Fichiers ajoutés
+**Fichiers clés**
+- [backend/main.py](../backend/main.py) — App FastAPI
+- [backend/chat.py](../backend/chat.py) — Agent RAG
 
-| Fichier | Rôle |
-|---|---|
-| `backend/__init__.py` | Marqueur de module |
-| `backend/main.py` | App FastAPI avec tous les endpoints |
-
-### Comment lancer
-
+**Lancer**
 ```bash
-cd /Users/issomeli/smart-foyer
 source .venv/bin/activate
 uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
----
+### 3.6 Agent IA conversationnel (RAG)
 
-## Étape 5 — Application mobile Flutter (web)
+**Objectif** : permettre à l'utilisateur de poser des questions en langage naturel sur ses dépenses ("Combien j'ai dépensé en mai ?", "Mon enseigne préférée ?").
 
-### Pourquoi Flutter ?
+**Approche RAG simplifiée**
+1. Charger tous les tickets de `data/receipts/`
+2. Calculer des stats (total, par enseigne, par mois, top produits)
+3. Injecter ce résumé comme **contexte** dans le prompt système
+4. Envoyer (system + contexte + historique + question) à llama3.1:8b
+5. Retourner la réponse
 
-Flutter permet de viser **iOS + Android + Web** avec une seule base de code. Pour la phase de test on a généré la version **web** (pas besoin de simulateur iOS/Android).
+**Garde-fous dans le prompt**
+- "Réponds UNIQUEMENT en te basant sur les données fournies"
+- "N'invente jamais de chiffres"
+- "Si l'info n'est pas dans le contexte, dis-le honnêtement"
 
-### Architecture de l'app
+**Limite de contexte** : on n'envoie que les 25 derniers tickets dans le détail (pour rester rapide). Les stats agrégées couvrent l'ensemble.
 
-```
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│ HomeScreen   │──>│ ScanScreen    │──>│ ResultsScreen │
-│ "Scanner"    │   │ Upload + load │   │ Receipt + cmp │
-└──────────────┘    └──────────────┘    └──────────────┘
-        │                  │                    │
-        └──────────────────┼────────────────────┘
-                           ▼
-                    ┌──────────────┐
-                    │ ApiClient    │  → HTTP vers FastAPI
-                    │ Models       │  → Mapping JSON ↔ Dart
-                    └──────────────┘
-```
+**Fichiers clés**
+- [backend/chat.py](../backend/chat.py) — Logique RAG
+- [smart_foyer_app/lib/screens/chat_screen.dart](../smart_foyer_app/lib/screens/chat_screen.dart) — UI chat
 
-### Écrans
+### 3.7 Tickets de démo (seed)
 
-1. **HomeScreen** : page d'accueil, vérifie que le backend est joignable, bouton "Scanner un ticket".
-2. **ScanScreen** : sélecteur de fichiers (file_picker), prévisualisation de l'image, bouton "Analyser le ticket", indicateur de chargement (20–40s).
-3. **ResultsScreen** : affiche
-   - L'en-tête du ticket (enseigne, date, total, confiance OCR)
-   - Une bannière verte avec les économies possibles
-   - Pour chaque produit : nom, prix, et liste d'alternatives moins chères
+**Pourquoi** : sans 15-20 tickets variés, l'agent IA n'a rien à analyser. Avec 1 ticket scanné en test, ses réponses sont peu impressionnantes.
 
-### Packages Dart utilisés
+**Solution**
+- [backend/seed_demo.py](../backend/seed_demo.py) génère 15 tickets fictifs réalistes répartis sur 90 jours, sur 5 enseignes (Intermarché, Carrefour, Monoprix, Lidl, Franprix).
+- Chaque ticket démo est tagué `"demo": true` → identifiable et purgeable sans toucher aux vrais tickets scannés.
 
-- `http` — requêtes HTTP vers le backend
-- `file_picker` — sélection d'image (compatible web, iOS, Android)
-
-### Fichiers ajoutés
-
-| Fichier | Rôle |
-|---|---|
-| `smart_foyer_app/pubspec.yaml` | Dépendances Dart |
-| `smart_foyer_app/lib/main.dart` | Entrée + thème |
-| `smart_foyer_app/lib/api/api_client.dart` | Client HTTP vers le backend |
-| `smart_foyer_app/lib/api/models.dart` | Modèles Dart (`Receipt`, `LineItem`, `ItemComparison`, …) |
-| `smart_foyer_app/lib/screens/home_screen.dart` | Écran d'accueil |
-| `smart_foyer_app/lib/screens/scan_screen.dart` | Écran d'upload |
-| `smart_foyer_app/lib/screens/results_screen.dart` | Écran de résultats |
-
-### Comment lancer l'app
-
+**Commandes**
 ```bash
-cd /Users/issomeli/smart-foyer/smart_foyer_app
+python -m backend.seed_demo            # ajoute 15 tickets démo
+python -m backend.seed_demo --n 25     # nombre custom
+python -m backend.seed_demo --clear    # supprime UNIQUEMENT les démo
+```
+
+### 3.8 App Flutter Web
+
+**Choix techniques**
+- Flutter cible **web** d'abord (pas d'iOS/Android pour l'instant — pas de simulateur requis pour tester).
+- 5 écrans : `HomeScreen`, `ScanScreen`, `ResultsScreen`, `HistoryScreen`, `ChatScreen`.
+- 2 packages externes : `http`, `file_picker`.
+
+**Écrans**
+
+| Écran | Description |
+|---|---|
+| Home | Vérifie le backend, propose 3 actions (scanner, historique, IA) |
+| Scan | Upload d'image via file_picker + loading + envoi à `/scan` |
+| Results | Détail du ticket : enseigne, total, items, comparaisons FAISS |
+| History | Stats agrégées + liste cliquable des tickets |
+| Chat | Bulles user/assistant + suggestions + bouton envoyer |
+
+**Lancer**
+```bash
+cd smart_foyer_app
 flutter run -d web-server --web-hostname=127.0.0.1 --web-port=5173
 ```
-
-Ouvrir ensuite `http://127.0.0.1:5173` dans le navigateur.
+Ouvrir `http://127.0.0.1:5173` dans le navigateur.
 
 ---
 
-## Comment tout faire tourner ensemble
+## 4. Comment tout faire tourner ensemble
 
-Trois services doivent tourner en parallèle, dans **3 terminaux séparés** :
+3 services à lancer en parallèle, dans 3 terminaux séparés :
 
-**Terminal 1 — Ollama** (le LLM)
+**Terminal 1 — Ollama (le LLM)**
 ```bash
 ollama serve
 ```
@@ -344,56 +337,229 @@ cd /Users/issomeli/smart-foyer/smart_foyer_app
 flutter run -d web-server --web-hostname=127.0.0.1 --web-port=5173
 ```
 
-Puis ouvrir `http://127.0.0.1:5173` dans le navigateur.
+Ensuite : ouvrir `http://127.0.0.1:5173` dans le navigateur.
+
+**Première installation (à faire une seule fois)**
+```bash
+# Python
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Ollama
+brew install ollama
+ollama pull llama3.1:8b
+
+# Flutter
+brew install --cask flutter
+flutter config --enable-web
+cd smart_foyer_app && flutter pub get
+
+# Démo (optionnel)
+python -m backend.seed_demo
+```
 
 ---
 
-## Récapitulatif des modules ajoutés
+## 5. Limitations connues à améliorer
 
-```
-smart-foyer/
-├── ocr/                    ← Étape 1 : extraction de texte (PaddleOCR)
-├── ner/                    ← Étape 2 : extraction structurée (Ollama LLM)
-├── matching/               ← Étape 3 : comparaison sémantique (FAISS)
-├── backend/                ← Étape 4 : API HTTP (FastAPI)
-├── smart_foyer_app/        ← Étape 5 : app mobile/web (Flutter)
-├── scrapers/               ← (déjà existant) scraping Monoprix + Lidl
-├── data/
-│   ├── ocr_results/        ← Sorties des tests OCR
-│   ├── ner_results/        ← Sorties des tests NER
-│   └── index/              ← Index FAISS sauvegardé
-└── docs/
-    └── implementation.md   ← Ce document
-```
+### Qualité des données
+
+| Problème | Cause | Idée d'amélioration |
+|---|---|---|
+| Comparaison de prix parfois absurde | Catalogue de seulement ~6000 produits sur 36 000 disponibles | Scraper en continu pour atteindre 80% du catalogue de chaque enseigne |
+| Lidl pollué par du non-alimentaire | Lidl mélange hard discount + alimentaire. Le filtre par mots-clés ne couvre pas tous les cas | Passer à un classifieur ML léger (catégorisation par embeddings) ou utiliser les catégories Lidl quand disponibles |
+| Produits prix=0 | Ruptures de stock au moment du scrape | Re-scraper périodiquement + flag "out_of_stock" |
+| Le ticket scanné contient une enseigne non scrapée (Carrefour, Intermarché) | Carrefour a un anti-bot Cloudflare/Datadome | Travailler le scraping avec Playwright + résidentiel proxies, ou utiliser l'API publique si disponible |
+
+### Qualité du pipeline
+
+| Problème | Cause | Idée d'amélioration |
+|---|---|---|
+| OCR de mauvaise qualité sur photos floues/sombres | Pas de pré-traitement d'image | Pipeline OpenCV : deskew, contrast enhancement, denoise, crop |
+| Le LLM confond parfois total et code-barres | Le prompt s'est amélioré mais reste imparfait | Pré-extraction par regex des candidats numeriques + heuristiques avant LLM |
+| Items à 0 € dans le NER | Mise en page 2 colonnes mal reconstruite | Utiliser les bounding boxes PaddleOCR pour reconstruire les lignes (regrouper par y, trier par x) |
+| Matching faux quand le produit n'existe pas | FAISS retourne toujours un voisin, même mauvais | Seuil dynamique selon la longueur du nom du produit |
+| Embedding manque de finesse | Modèle MiniLM générique | Fine-tuner sur paires (ticket, catalogue) — nécessite données labelisées |
+
+### Architecture / production
+
+| Manque | Pourquoi c'est important |
+|---|---|
+| Pas d'authentification utilisateur | Aujourd'hui tous les tickets sont stockés en commun |
+| Pas de base de données | JSON files → ne passe pas l'échelle, pas de requêtes |
+| Pas de tests automatisés | Pas de filet pour les régressions |
+| Pas de monitoring | Pas de visibilité sur les erreurs en prod |
+| Backend non-déployé | Tout tourne en local sur la machine du dev |
 
 ---
 
-## Limites actuelles et pistes d'amélioration
+## 6. Ce qui reste à faire (priorisé)
 
-### Le matching donne parfois des résultats absurdes
+### Tier 1 — Passer du POC à un MVP utilisable
 
-C'est la **principale limite du POC actuel**. Exemple constaté : un ticket Intermarché avec des pâtes Panzani matche avec des "Chaussures homme" chez Lidl.
+**A. App mobile native (iOS + Android)**
+- Aujourd'hui : Flutter Web fonctionnel
+- Cible : `flutter build apk` + `flutter build ios`, distribution TestFlight + APK
+- Travaux nécessaires :
+  - Tester l'app sur simulateur (`flutter run -d ios`, `flutter run -d android`)
+  - Remplacer `file_picker` par `image_picker` (mieux intégré mobile, accès caméra natif)
+  - Gérer les permissions caméra (Info.plist iOS, AndroidManifest.xml)
+  - Ajuster l'URL du backend (plus de `127.0.0.1` — il faut une URL publique)
 
-**Pourquoi ?**
+**B. Authentification utilisateur (Firebase Auth)**
+- Chaque utilisateur a ses propres tickets
+- Travaux :
+  - Setup Firebase Auth dans le projet Flutter (`firebase_auth` package)
+  - Ajouter `firebase_admin` côté backend pour vérifier les JWT
+  - Ajouter `user_id` à chaque ticket sauvegardé (`data/receipts/{user_id}/{id}.json`)
+  - Écran de login/signup dans Flutter
 
-1. **Le catalogue scrapé est trop petit.** Seulement **200 produits au total** (100 Monoprix + 100 Lidl). Pour matcher correctement, il faudrait plusieurs milliers de produits par enseigne.
-2. **Le catalogue est pollué par du non-alimentaire.** Lidl mélange alimentaire et hard discount (chaussures, valises, coussins, électroménager…). Sans filtre, ces produits remontent dans les comparaisons.
-3. **Quand le produit recherché n'existe pas dans le catalogue**, FAISS retourne quand même le "moins pire" résultat, qui peut être très éloigné sémantiquement.
+**C. Base de données persistante (Firestore ou Postgres)**
+- Remplacer les fichiers JSON par une vraie base
+- Schéma : `users`, `receipts`, `items`, `comparisons`
+- Index sur `user_id`, `date` pour les requêtes historiques rapides
+- Permet aussi de scaler le matching (catalogue côté DB plutôt qu'en mémoire)
 
-**Comment l'améliorer** :
+### Tier 2 — Déploiement GCP
+
+**D. Cloud Run pour le backend**
+- Dockeriser le backend (`Dockerfile` + `docker-compose.yml`)
+- Variables d'env : URL Ollama, modèle, etc.
+- Cloud Run avec configuration GPU si nécessaire (PaddleOCR + sentence-transformers tournent sur CPU mais sont lents)
+
+**E. LLM côté cloud**
+- Ollama en local n'est pas viable en prod
+- Options :
+  - Vertex AI (Gemini Pro / Gemini Flash) — cohérent avec l'archi cible
+  - Anthropic Claude API (excellent en JSON structuré)
+  - Mistral API (alternative française)
+- Adapter [ner/extractor.py](../ner/extractor.py) et [backend/chat.py](../backend/chat.py) pour supporter plusieurs backends LLM (pattern Strategy)
+
+**F. Cloud Storage pour les images de tickets**
+- Aujourd'hui les images sont supprimées après traitement
+- Cible : les conserver pour pouvoir re-traiter en cas de bug, ou afficher dans l'historique
+
+**G. BigQuery pour le catalogue prix**
+- L'index FAISS en mémoire ne scale pas au-delà de quelques millions de produits
+- Vertex AI Vector Search ou pgvector pour la recherche vectorielle
+- BigQuery pour les métadonnées et l'historique
+
+**H. Cloud Functions pour les scrapers**
+- Aujourd'hui : on lance les scrapers à la main
+- Cible : Cloud Scheduler déclenche un scraping quotidien/hebdomadaire automatique
+
+**I. API Gateway + Firebase Auth**
+- L'API Gateway protège les endpoints et vérifie les JWT Firebase
+
+### Tier 3 — Améliorations qualité
+
+**J. Pré-traitement d'image**
+- Module `image_preprocess/` à créer
+- OpenCV : deskew (redressement), contrast enhancement (CLAHE), denoise, crop sur le ticket
+- À placer entre `/scan` upload et l'OCR
+
+**K. Reconstruction layout 2 colonnes**
+- Utiliser les `box` des `OCRLine` pour regrouper par ligne (même y) puis trier par x
+- Permet au LLM d'avoir des lignes "produit ... prix" propres
+- Devrait éliminer les items à 0 €
+
+**L. Tests automatisés**
+- Backend : pytest sur les endpoints (mocker Ollama + FAISS)
+- Frontend : `flutter test` sur les widgets
+- Pipeline OCR/NER : régression sur un golden set de tickets annotés
+
+**M. Catégorisation des produits**
+- Tagger chaque produit du catalogue (alimentaire / hygiène / ménager / boissons / etc.)
+- Le matching ne propose que des alternatives de la même catégorie
+- Approche : zero-shot avec un LLM, ou modèle classifieur simple
+
+**N. Scrapers Carrefour + Intermarché**
+- Carrefour : Datadome anti-bot — il faudra des proxies résidentiels + Playwright stealth
+- Intermarché : pas testé, à investiguer
+
+### Tier 4 — Features produit
+
+**O. Notifications push**
+- Alerte quand un produit récurrent baisse chez une autre enseigne
+- Bilan mensuel de dépenses
+
+**P. Listes de courses**
+- L'utilisateur peut créer une liste, l'app suggère l'enseigne la moins chère pour la totalité
+
+**Q. Partage / famille**
+- Plusieurs utilisateurs sur un même foyer (cf. "SmartFoyer")
+- Tickets partagés, vue agrégée
+
+**R. Export comptable**
+- CSV / Excel pour l'utilisateur qui veut faire son propre suivi
+
+---
+
+## 7. Notes pour le développeur qui reprend
+
+### Choses non-évidentes à savoir
+
+- **Le venv Python est en 3.9** (le système). Tous les fichiers utilisent `from __future__ import annotations` pour permettre la syntaxe `X | None` malgré 3.9. Ne pas casser ça.
+- **Les scrapers écrivent dans `data/` relativement au CWD** — toujours lancer depuis la racine du projet (`/Users/issomeli/smart-foyer`).
+- **PaddleOCR télécharge ses modèles dans `~/.paddlex/`** lors du premier appel (~50 Mo).
+- **Ollama télécharge llama3.1:8b dans `~/.ollama/`** (~5 Go).
+- **L'index FAISS est en mémoire** lors du backend — c'est OK pour 10k produits, à revoir au-delà.
+- **CORS est `*`** — à restreindre en prod.
+- **Le seuil de matching 0.6** dans [matching/matcher.py](../matching/matcher.py) est paramétrable mais doit être ajusté si on change de modèle d'embedding ou si le catalogue grossit beaucoup.
+- **Le LLM côté NER ET côté chat est le même Ollama llama3.1:8b** — un seul instance partagée. C'est lent (~20 s par scan, ~10-30 s par message chat).
+
+### Où ajouter une feature
+
+| Si tu veux... | Modifie... |
+|---|---|
+| Ajouter un champ extrait du ticket (catégorie, adresse...) | `ner/models.py` + `ner/prompt.py` + UI Flutter |
+| Ajouter un nouveau scraper (Franprix, ...) | Copier `scraper_lidl.py`, adapter, ajouter dans `run_all.py`, mentionner dans `filters.py` si besoin |
+| Ajouter un type de question à l'agent IA | Améliorer le `SYSTEM_PROMPT` dans `backend/chat.py` et enrichir `_build_context` |
+| Améliorer l'UI | `smart_foyer_app/lib/screens/` |
+| Ajouter un endpoint backend | `backend/main.py`, créer un module `backend/{feature}.py` si la logique est grosse |
+| Changer le LLM | `OLLAMA_MODEL` dans `backend/main.py`, ou créer une abstraction (Strategy pattern) |
+
+### Commandes utiles
 
 ```bash
-# Scraper beaucoup plus de produits (plusieurs milliers par enseigne)
-python scrapers/scraper_monoprix.py --max-products 5000
-python scrapers/scraper_lidl.py --max-products 5000
+# Re-builder l'index après un nouveau scrape
+python -m matching.build_index --input data
 
-# Reconstruire l'index
-python -m matching.build_index --input scrapers/data
+# Purger les tickets démo
+python -m backend.seed_demo --clear
+
+# Voir le statut du catalogue scrapé
+python3 -c "import json; d=json.load(open('data/monoprix_products.json')); print(f'{len(d)} produits')"
+
+# Tester l'agent IA en ligne de commande
+curl -s -X POST http://127.0.0.1:8000/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"Combien j ai depense ?", "history":[]}' | python3 -m json.tool
+
+# Killer un port occupé
+lsof -ti:8000 | xargs kill -9
+lsof -ti:5173 | xargs kill -9
 ```
 
-Et idéalement :
-- Filtrer les produits Lidl pour ne garder que l'alimentaire
-- Ajouter un scraper pour Intermarché et Carrefour (les enseignes les plus présentes sur les vrais tickets)
-- Ajouter une catégorisation des produits pour ne comparer que ce qui est comparable (pâtes avec pâtes, lait avec lait…)
+---
 
-**À retenir** : le pipeline est techniquement fonctionnel. La qualité des résultats dépend de la **quantité et qualité des données** dans le catalogue. C'est un problème de données, pas de code.
+## 8. Récap visuel : ce qui a été fait
+
+```
+✅ Scrapers Monoprix + Lidl (avec filtre alimentaire + sauvegarde incrémentale)
+✅ OCR PaddleOCR (multi-langue, auto-rotation, resize)
+✅ NER Ollama llama3.1:8b (prompt structuré, mode JSON natif)
+✅ Matching FAISS + sentence-transformers (multilingue, normalisation OCR)
+✅ Backend FastAPI (scan + history + chat + CORS + persistance JSON)
+✅ App Flutter Web (5 écrans, fonctionnel)
+✅ Persistance des tickets + écran historique + statistiques
+✅ Agent IA conversationnel (RAG sur historique)
+✅ Tickets de démo réalistes (seed script)
+✅ Catalogue final : ~6000 produits alimentaires propres
+```
+
+**État actuel** : le POC est **complet de bout en bout**, démontre la valeur, peut être présenté en démo.
+
+**Pour passer en MVP** : voir Tier 1 (mobile native + auth + DB).
+**Pour passer en prod** : voir Tier 2 (déploiement GCP).

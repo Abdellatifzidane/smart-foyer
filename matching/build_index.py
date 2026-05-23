@@ -42,6 +42,13 @@ def load_products(input_dir: Path) -> list[dict]:
                 continue
             if not p.get("name"):
                 continue
+            # Skip products with no usable price (rupture de stock, mauvais scrape...)
+            try:
+                price = float(p.get("price", 0))
+            except (TypeError, ValueError):
+                price = 0.0
+            if price <= 0:
+                continue
             seen.add(key)
             products.append(p)
 

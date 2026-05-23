@@ -103,12 +103,16 @@ class ItemComparison {
 }
 
 class ScanResult {
+  final String id;
+  final String scannedAt;
   final Receipt receipt;
   final List<ItemComparison> comparisons;
   final double totalSavings;
   final double ocrConfidence;
 
   ScanResult({
+    required this.id,
+    required this.scannedAt,
     required this.receipt,
     required this.comparisons,
     required this.totalSavings,
@@ -116,12 +120,72 @@ class ScanResult {
   });
 
   factory ScanResult.fromJson(Map<String, dynamic> j) => ScanResult(
+        id: j['id'] ?? '',
+        scannedAt: j['scanned_at'] ?? '',
         receipt: Receipt.fromJson(j['receipt'] as Map<String, dynamic>),
         comparisons: ((j['comparisons'] as List?) ?? [])
             .map((e) => ItemComparison.fromJson(e as Map<String, dynamic>))
             .toList(),
         totalSavings: _toDouble(j['total_savings']),
         ocrConfidence: _toDouble(j['ocr']?['avg_confidence']),
+      );
+}
+
+
+class ReceiptSummary {
+  final String id;
+  final String scannedAt;
+  final String enseigne;
+  final String date;
+  final double total;
+  final int nItems;
+  final double totalSavings;
+
+  ReceiptSummary({
+    required this.id,
+    required this.scannedAt,
+    required this.enseigne,
+    required this.date,
+    required this.total,
+    required this.nItems,
+    required this.totalSavings,
+  });
+
+  factory ReceiptSummary.fromJson(Map<String, dynamic> j) => ReceiptSummary(
+        id: j['id'] ?? '',
+        scannedAt: j['scanned_at'] ?? '',
+        enseigne: j['enseigne'] ?? '',
+        date: j['date'] ?? '',
+        total: _toDouble(j['total']),
+        nItems: (j['n_items'] as num?)?.toInt() ?? 0,
+        totalSavings: _toDouble(j['total_savings']),
+      );
+}
+
+
+class HistoryStats {
+  final int nReceipts;
+  final double totalSpent;
+  final double totalSavings;
+  final Map<String, double> byEnseigne;
+  final Map<String, double> byMonth;
+
+  HistoryStats({
+    required this.nReceipts,
+    required this.totalSpent,
+    required this.totalSavings,
+    required this.byEnseigne,
+    required this.byMonth,
+  });
+
+  factory HistoryStats.fromJson(Map<String, dynamic> j) => HistoryStats(
+        nReceipts: (j['n_receipts'] as num?)?.toInt() ?? 0,
+        totalSpent: _toDouble(j['total_spent']),
+        totalSavings: _toDouble(j['total_savings']),
+        byEnseigne: ((j['by_enseigne'] as Map?) ?? {})
+            .map((k, v) => MapEntry(k.toString(), _toDouble(v))),
+        byMonth: ((j['by_month'] as Map?) ?? {})
+            .map((k, v) => MapEntry(k.toString(), _toDouble(v))),
       );
 }
 

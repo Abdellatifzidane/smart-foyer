@@ -41,4 +41,52 @@ class ApiClient {
     }
     return jsonDecode(resp.body) as Map<String, dynamic>;
   }
+
+  /// List of past receipts (summaries, newest first).
+  static Future<List<ReceiptSummary>> history() async {
+    final resp = await http.get(Uri.parse('$baseUrl/history'));
+    if (resp.statusCode != 200) {
+      throw Exception('Backend error ${resp.statusCode}');
+    }
+    final list = jsonDecode(resp.body) as List;
+    return list
+        .map((e) => ReceiptSummary.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Aggregated stats across stored receipts.
+  static Future<HistoryStats> historyStats() async {
+    final resp = await http.get(Uri.parse('$baseUrl/history/stats'));
+    if (resp.statusCode != 200) {
+      throw Exception('Backend error ${resp.statusCode}');
+    }
+    return HistoryStats.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+  }
+
+  /// Full details of a stored receipt.
+  static Future<ScanResult> historyDetail(String id) async {
+    final resp = await http.get(Uri.parse('$baseUrl/history/$id'));
+    if (resp.statusCode != 200) {
+      throw Exception('Backend error ${resp.statusCode}');
+    }
+    return ScanResult.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+  }
+
+  /// Send a question to the RAG agent and get an answer.
+  /// `history` carries prior turns so the agent has conversation context.
+  static Future<String> chat(
+    String question,
+    List<Map<String, String>> history,
+  ) async {
+    final resp = await http.post(
+      Uri.parse('$baseUrl/chat'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'question': question, 'history': history}),
+    );
+    if (resp.statusCode != 200) {
+      throw Exception('Backend error ${resp.statusCode}: ${resp.body}');
+    }
+    final data = jsonDecode(resp.body) as Map<String, dynamic>;
+    return (data['answer'] ?? '').toString();
+  }
 }

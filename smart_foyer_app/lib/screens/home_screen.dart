@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../api/api_client.dart';
+import 'chat_screen.dart';
+import 'history_screen.dart';
 import 'scan_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -82,6 +84,52 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     style: FilledButton.styleFrom(
                       minimumSize: const Size(double.infinity, 56),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: _backendOk
+                        ? () => Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => const HistoryScreen(),
+                              ),
+                            )
+                        : null,
+                    icon: const Icon(Icons.history_rounded),
+                    label: const Padding(
+                      padding: EdgeInsets.symmetric(
+                          vertical: 12, horizontal: 8),
+                      child: Text('Mes tickets',
+                          style: TextStyle(fontSize: 15)),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(double.infinity, 52),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: _backendOk
+                        ? () => Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => const ChatScreen(),
+                              ),
+                            )
+                        : null,
+                    icon: const Icon(Icons.auto_awesome_rounded),
+                    label: const Padding(
+                      padding: EdgeInsets.symmetric(
+                          vertical: 12, horizontal: 8),
+                      child: Text('Conseiller IA',
+                          style: TextStyle(fontSize: 15)),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(double.infinity, 52),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(16),
                       ),

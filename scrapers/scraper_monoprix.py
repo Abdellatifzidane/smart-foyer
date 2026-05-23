@@ -27,6 +27,7 @@ import cloudscraper
 from bs4 import BeautifulSoup
 
 from config import OUTPUT_DIR, REQUEST_TIMEOUT, get_logger, rate_limit
+from filters import is_food_product
 from models import Product, save_products
 
 log = get_logger("monoprix")
@@ -155,19 +156,32 @@ def run(max_products: int = 0, category_filter: str = ""):
         urls = urls[:max_products]
         log.info(f"Limited to {max_products} products")
 
+    out_path = os.path.join(OUTPUT_DIR, "monoprix_products.json")
     products = []
+    skipped_non_food = 0
     for i, url in enumerate(urls):
         log.info(f"[{i+1}/{len(urls)}] {url}")
         product = scrape_product_page(url)
-        if product:
-            products.append(product)
-            log.info(f"  -> {product.name} | {product.price} EUR | {product.brand}")
-        else:
-            log.warning(f"  -> No data extracted")
+        if not product:
+            log.warning("  -> No data extracted")
+            rate_limit()
+            continue
+        if not is_food_product(product.name):
+            skipped_non_food += 1
+            log.info(f"  -> SKIP (non-food): {product.name}")
+            rate_limit()
+            continue
+        products.append(product)
+        log.info(f"  -> {product.name} | {product.price} EUR | {product.brand}")
+        # Incremental save so progress is never lost if the scraper is stopped
+        if len(products) % 100 == 0:
+            save_products(products, out_path)
         rate_limit()
 
+    if skipped_non_food:
+        log.info(f"Skipped {skipped_non_food} non-food products")
     log.info(f"Total products scraped: {len(products)}")
-    save_products(products, os.path.join(OUTPUT_DIR, "monoprix_products.json"))
+    save_products(products, out_path)
     return products
 
 

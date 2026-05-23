@@ -212,8 +212,35 @@ class _ItemCard extends StatelessWidget {
                 style: TextStyle(fontSize: 12, color: Color(0xFF8A93A1)),
               ),
             ),
-          if (cheapers.isNotEmpty) ...[
+          if (hasMatch) ...[
             const Divider(height: 18),
+            Row(
+              children: [
+                const Icon(Icons.compare_arrows_rounded,
+                    size: 14, color: Color(0xFF1B8A6B)),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    'Match : ${comparison!.bestMatchEnseigne} · ${comparison!.bestMatchName}',
+                    style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF0E5C45)),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '${comparison!.bestMatchPrice.toStringAsFixed(2)} €',
+                  style: const TextStyle(
+                      fontSize: 12, fontWeight: FontWeight.w700),
+                ),
+              ],
+            ),
+          ],
+          if (cheapers.isNotEmpty) ...[
+            const SizedBox(height: 8),
             const Text(
               'Moins cher ailleurs :',
               style: TextStyle(
