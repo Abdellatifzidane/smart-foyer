@@ -4,9 +4,18 @@ import 'models.dart';
 
 /// HTTP client for the SmartFoyer FastAPI backend.
 class ApiClient {
-  /// Backend base URL. When running Flutter Web on the same machine as the
-  /// backend, localhost works directly.
-  static const String baseUrl = 'http://127.0.0.1:8000';
+  /// Backend base URL. Defaults to localhost which works for:
+  ///   - Flutter Web on the same machine
+  ///   - iOS Simulator (shares the host network)
+  ///
+  /// On a PHYSICAL iPhone, override with your Mac's LAN IP:
+  ///   flutter run --dart-define=BACKEND_URL=http://192.168.1.42:8000
+  ///
+  /// In production, set this to your deployed backend URL (HTTPS).
+  static const String baseUrl = String.fromEnvironment(
+    'BACKEND_URL',
+    defaultValue: 'http://127.0.0.1:8000',
+  );
 
   /// Send a receipt image to the backend and parse the response.
   ///

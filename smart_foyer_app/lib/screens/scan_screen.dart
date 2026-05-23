@@ -1,6 +1,10 @@
 import 'dart:typed_data';
+
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+
 import '../api/api_client.dart';
 import 'results_screen.dart';
 
@@ -17,36 +21,109 @@ class _ScanScreenState extends State<ScanScreen> {
   bool _loading = false;
   String? _errorMessage;
 
-  Future<void> _pickImage() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.image,
-      withData: true,
-    );
-    if (result == null || result.files.isEmpty) return;
+  final ImagePicker _picker = ImagePicker();
 
-    final file = result.files.first;
-    setState(() {
-      _imageBytes = file.bytes;
-      _filename = file.name;
-      _errorMessage = null;
-    });
+  /// On mobile we prefer image_picker (native camera + gallery); on web we
+  /// fall back to file_picker (image_picker on web only opens a file dialog).
+  Future<void> _pickFromCamera() async {
+    try {
+      final picked = await _picker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 85,
+        maxWidth: 2000,
+      );
+      if (picked == null) return;
+      final bytes = await picked.readAsBytes();
+      setState(() {
+        _imageBytes = bytes;
+        _filename = picked.name;
+        _errorMessage = null;
+      });
+    } catch (e) {
+      setState(() => _errorMessage = 'Caméra : $e');
+    }
+  }
+
+  Future<void> _pickFromGallery() async {
+    try {
+      if (kIsWeb) {
+        final result = await FilePicker.platform.pickFiles(
+          type: FileType.image,
+          withData: true,
+        );
+        if (result == null || result.files.isEmpty) return;
+        final file = result.files.first;
+        setState(() {
+          _imageBytes = file.bytes;
+          _filename = file.name;
+          _errorMessage = null;
+        });
+      } else {
+        final picked = await _picker.pickImage(
+          source: ImageSource.gallery,
+          imageQuality: 85,
+          maxWidth: 2000,
+        );
+        if (picked == null) return;
+        final bytes = await picked.readAsBytes();
+        setState(() {
+          _imageBytes = bytes;
+          _filename = picked.name;
+          _errorMessage = null;
+        });
+      }
+    } catch (e) {
+      setState(() => _errorMessage = 'Galerie : $e');
+    }
+  }
+
+  Future<void> _showPickerSheet() async {
+    // On the web there's no camera picker, just open the file dialog directly.
+    if (kIsWeb) {
+      await _pickFromGallery();
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_camera_rounded),
+              title: const Text('Prendre une photo'),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                _pickFromCamera();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_rounded),
+              title: const Text('Choisir dans la galerie'),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                _pickFromGallery();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _submit() async {
     if (_imageBytes == null) return;
-
     setState(() {
       _loading = true;
       _errorMessage = null;
     });
 
     try {
-      final scan = await ApiClient.scan(_imageBytes!, _filename ?? 'ticket.jpg');
+      final scan =
+          await ApiClient.scan(_imageBytes!, _filename ?? 'ticket.jpg');
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => ResultsScreen(result: scan),
-        ),
+        MaterialPageRoute(builder: (_) => ResultsScreen(result: scan)),
       );
     } catch (e) {
       setState(() {
@@ -71,9 +148,7 @@ class _ScanScreenState extends State<ScanScreen> {
                 children: [
                   const SizedBox(height: 16),
                   _PreviewArea(
-                    imageBytes: _imageBytes,
-                    onTap: _pickImage,
-                  ),
+                      imageBytes: _imageBytes, onTap: _showPickerSheet),
                   const SizedBox(height: 16),
                   if (_filename != null)
                     Text(
@@ -96,24 +171,56 @@ class _ScanScreenState extends State<ScanScreen> {
                       ),
                     ),
                   if (_errorMessage != null) const SizedBox(height: 16),
-                  OutlinedButton.icon(
-                    onPressed: _loading ? null : _pickImage,
-                    icon: const Icon(Icons.image_outlined),
-                    label: Text(_imageBytes == null
-                        ? 'Choisir une image'
-                        : 'Changer d\'image'),
-                    style: OutlinedButton.styleFrom(
-                      minimumSize: const Size.fromHeight(52),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
+                  if (!kIsWeb)
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _loading ? null : _pickFromCamera,
+                            icon: const Icon(Icons.photo_camera_rounded),
+                            label: const Text('Photo'),
+                            style: OutlinedButton.styleFrom(
+                              minimumSize: const Size.fromHeight(52),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _loading ? null : _pickFromGallery,
+                            icon: const Icon(Icons.photo_library_outlined),
+                            label: const Text('Galerie'),
+                            style: OutlinedButton.styleFrom(
+                              minimumSize: const Size.fromHeight(52),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    )
+                  else
+                    OutlinedButton.icon(
+                      onPressed: _loading ? null : _pickFromGallery,
+                      icon: const Icon(Icons.image_outlined),
+                      label: Text(_imageBytes == null
+                          ? 'Choisir une image'
+                          : 'Changer d\'image'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(52),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
                       ),
                     ),
-                  ),
                   const SizedBox(height: 12),
                   FilledButton(
-                    onPressed: (_imageBytes != null && !_loading)
-                        ? _submit
-                        : null,
+                    onPressed:
+                        (_imageBytes != null && !_loading) ? _submit : null,
                     style: FilledButton.styleFrom(
                       minimumSize: const Size.fromHeight(56),
                       shape: RoundedRectangleBorder(
@@ -138,8 +245,8 @@ class _ScanScreenState extends State<ScanScreen> {
                       child: Text(
                         'OCR + extraction + comparaison...\nCette étape prend 20-40s.',
                         textAlign: TextAlign.center,
-                        style: TextStyle(
-                            color: Color(0xFF5C6470), fontSize: 12),
+                        style:
+                            TextStyle(color: Color(0xFF5C6470), fontSize: 12),
                       ),
                     ),
                 ],
@@ -155,7 +262,6 @@ class _ScanScreenState extends State<ScanScreen> {
 class _PreviewArea extends StatelessWidget {
   final Uint8List? imageBytes;
   final VoidCallback onTap;
-
   const _PreviewArea({required this.imageBytes, required this.onTap});
 
   @override
@@ -175,14 +281,14 @@ class _PreviewArea extends StatelessWidget {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.add_photo_alternate_outlined,
+                    Icon(Icons.add_a_photo_outlined,
                         size: 64, color: Color(0xFF1B8A6B)),
                     SizedBox(height: 12),
                     Text(
-                      'Cliquez pour choisir\nune photo de ticket',
+                      'Touchez pour prendre\nune photo ou choisir une image',
                       textAlign: TextAlign.center,
-                      style: TextStyle(
-                          fontSize: 14, color: Color(0xFF5C6470)),
+                      style:
+                          TextStyle(fontSize: 14, color: Color(0xFF5C6470)),
                     ),
                   ],
                 ),
