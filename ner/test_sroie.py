@@ -2,21 +2,21 @@
 End-to-end test: OCR + NER on SROIE2019
 ========================================
 Runs the full pipeline on a sample of receipts:
-  image  ->  PaddleOCR  ->  Ollama LLM  ->  structured Receipt
+  image  ->  PaddleOCR  ->  Groq LLM  ->  structured Receipt
 
 Then compares the extracted fields to the ground-truth entities/*.txt
 provided by SROIE2019 (company, date, total).
 
 Usage:
   python -m ner.test_sroie --n 5
-  python -m ner.test_sroie --n 10 --model llama3.1:8b
+  python -m ner.test_sroie --n 10 --model llama-3.3-70b-versatile
 """
 
 import argparse
 import json
 from pathlib import Path
 
-from ner.extractor import OllamaExtractor
+from ner.extractor import DEFAULT_MODEL, GroqExtractor
 from ner.models import Receipt
 from ocr.paddle_ocr import ReceiptOCR
 
@@ -68,7 +68,7 @@ def main():
     parser = argparse.ArgumentParser(description="OCR + NER pipeline test on SROIE2019")
     parser.add_argument("--n", type=int, default=5, help="Number of images")
     parser.add_argument("--split", type=str, default="train", choices=["train", "test"])
-    parser.add_argument("--model", type=str, default="llama3.1:8b", help="Ollama model name")
+    parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="Groq model name")
     parser.add_argument("--lang", type=str, default="en", help="OCR language")
     args = parser.parse_args()
 
@@ -84,7 +84,7 @@ def main():
     print(f"Running OCR + NER on {len(images)} images using {args.model} ...")
 
     ocr = ReceiptOCR(lang=args.lang)
-    extractor = OllamaExtractor(model=args.model)
+    extractor = GroqExtractor(model=args.model)
 
     scores = {"company": 0, "total": 0, "date": 0}
     for i, img_path in enumerate(images, 1):

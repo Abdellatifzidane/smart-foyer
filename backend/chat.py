@@ -9,23 +9,44 @@ How it works:
   1. Load all stored receipts.
   2. Compute aggregate stats (totals, by enseigne, by month).
   3. Inject a compact text representation of that data as context.
-  4. Send the (system + context + question) prompt to Ollama.
+  4. Send the (system + context + question) prompt to Groq.
   5. Return the LLM answer.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-import ollama
+from dotenv import load_dotenv
+from groq import Groq
+
+
+load_dotenv(override=True)
 
 
 # ─── Configuration ────────────────────────────────────────────────────
-DEFAULT_MODEL = "llama3.1:8b"
+DEFAULT_MODEL = "llama-3.3-70b-versatile"
 MAX_RECEIPTS_IN_CONTEXT = 25  # keep the prompt small for fast responses
+
+
+_client: Groq | None = None
+
+
+def _get_client() -> Groq:
+    global _client
+    if _client is None:
+        key = os.environ.get("GROQ_API_KEY")
+        if not key:
+            raise RuntimeError(
+                "GROQ_API_KEY is not set. Add it to your environment or to a .env "
+                "file at the project root."
+            )
+        _client = Groq(api_key=key)
+    return _client
 
 
 SYSTEM_PROMPT = """Tu es SmartFoyer Conseiller, un assistant financier qui aide l'utilisateur a comprendre et optimiser ses depenses de courses alimentaires.
@@ -152,7 +173,7 @@ def answer(question: str,
         question: the user's natural-language question (French).
         receipts_dir: where to read the user's receipts from.
         history: optional prior turns [{"role": "user"|"assistant", "content": "..."}]
-        model: Ollama model name.
+        model: Groq model name.
 
     Returns:
         The assistant's reply (plain text).
@@ -168,10 +189,9 @@ def answer(question: str,
         messages.extend(history[-8:])
     messages.append({"role": "user", "content": question})
 
-    client = ollama.Client()
-    response = client.chat(
+    response = _get_client().chat.completions.create(
         model=model,
         messages=messages,
-        options={"temperature": 0.2},  # a tiny bit of variety but stays factual
+        temperature=0.2,  # a tiny bit of variety but stays factual
     )
-    return response["message"]["content"].strip()
+    return (response.choices[0].message.content or "").strip()

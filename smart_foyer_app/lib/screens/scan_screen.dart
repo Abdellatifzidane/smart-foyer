@@ -122,12 +122,22 @@ class _ScanScreenState extends State<ScanScreen> {
       final scan =
           await ApiClient.scan(_imageBytes!, _filename ?? 'ticket.jpg');
       if (!mounted) return;
+      // Even on partial failures (pipeline.ok == false), navigate to the
+      // results screen — it knows how to render a degraded response and
+      // show the user what went wrong. This way the app never feels stuck.
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => ResultsScreen(result: scan)),
       );
-    } catch (e) {
+    } on ApiException catch (e) {
+      if (!mounted) return;
       setState(() {
-        _errorMessage = e.toString();
+        _errorMessage = e.message;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Erreur inattendue : $e';
         _loading = false;
       });
     }

@@ -35,7 +35,7 @@ L'architecture cible (GCP) est décrite dans le [README principal](../README.md)
                   ┌────────────────┴───────────────┐
                   │ Sources externes                │
                   │  - Scrapers Monoprix / Lidl     │
-                  │  - LLM Ollama (llama3.1:8b)     │
+                  │  - LLM Groq (llama-3.3-70b)     │
                   └─────────────────────────────────┘
 ```
 
@@ -62,8 +62,8 @@ smart-foyer/
 │
 ├── ner/                       ← Extraction structurée via LLM
 │   ├── models.py              ← Receipt + LineItem (extensible)
-│   ├── prompt.py              ← Prompt système + schéma JSON
-│   ├── extractor.py           ← Wrapper Ollama
+│   ├── prompt.py              ← Prompt système + schéma JSON (exhaustif)
+│   ├── extractor.py           ← Wrapper Groq (llama-3.3-70b-versatile)
 │   └── test_sroie.py          ← Pipeline OCR + NER sur SROIE2019
 │
 ├── matching/                  ← Comparaison sémantique des produits
@@ -82,22 +82,25 @@ smart-foyer/
 ├── smart_foyer_app/           ← App Flutter (Web pour l'instant)
 │   ├── pubspec.yaml
 │   └── lib/
-│       ├── main.dart
+│       ├── main.dart                 ← ErrorBoundary global + theme
 │       ├── api/
-│       │   ├── api_client.dart    ← Client HTTP vers le backend
-│       │   └── models.dart        ← Modèles Dart (Receipt, ...)
+│       │   ├── api_client.dart       ← Client HTTP + ApiException + timeouts
+│       │   └── models.dart           ← Modèles Dart (Receipt, ScanResult...)
 │       └── screens/
-│           ├── home_screen.dart      ← Accueil + 3 boutons
+│           ├── home_screen.dart      ← Accueil + 5 boutons + retry backend
 │           ├── scan_screen.dart      ← Upload image + analyse
-│           ├── results_screen.dart   ← Affichage ticket + comparaisons
-│           ├── history_screen.dart   ← Liste des tickets + stats
-│           └── chat_screen.dart      ← Agent IA conversationnel
+│           ├── results_screen.dart   ← Photo originale + ticket + comparaisons + savings
+│           ├── history_screen.dart   ← Liste des tickets (thumbnails) + stats
+│           ├── analytics_screen.dart ← Graphiques semaine/mois/catégorie/enseigne
+│           ├── chat_screen.dart      ← Agent IA conversationnel
+│           └── admin_screen.dart     ← CRUD catalogue + jobs scraping
 │
 ├── data/                      ← Données générées (gitignored)
 │   ├── monoprix_products.json    ← ~2800 produits scrapés
 │   ├── lidl_products.json        ← ~3200 produits scrapés (food only)
 │   ├── index/                    ← Index FAISS + métadonnées
-│   ├── receipts/                 ← Tickets scannés + tickets démo
+│   ├── receipts/                 ← Tickets scannés (JSON)
+│   │   └── images/               ← Photos originales (JPEG/PNG) {id}.jpg
 │   ├── ocr_results/              ← Sorties des tests OCR
 │   └── ner_results/              ← Sorties des tests NER
 │

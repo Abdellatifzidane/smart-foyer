@@ -1,101 +1,289 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'models.dart';
 
+/// Structured API error — never let raw `Exception` bubble up to the UI.
+/// The UI catches `ApiException` and shows `message` in a SnackBar so the
+/// app stays usable after any failure (network down, backend 500, timeout).
+class ApiException implements Exception {
+  final String message;
+  final int? statusCode;
+  final String? path;
+  final bool isTimeout;
+  final bool isNetwork;
+  const ApiException(
+    this.message, {
+    this.statusCode,
+    this.path,
+    this.isTimeout = false,
+    this.isNetwork = false,
+  });
+
+  @override
+  String toString() => message;
+}
+
 /// HTTP client for the SmartFoyer FastAPI backend.
+///
+/// Every call is wrapped with a timeout and a structured `ApiException`
+/// so callers can do `try { await ApiClient.scan(...) } on ApiException
+/// catch (e) { showSnack(e.message); }` and the app keeps running.
 class ApiClient {
   /// Backend base URL. Defaults to localhost which works for:
   ///   - Flutter Web on the same machine
   ///   - iOS Simulator (shares the host network)
   ///
-  /// On a PHYSICAL iPhone, override with your Mac's LAN IP:
-  ///   flutter run --dart-define=BACKEND_URL=http://192.168.1.42:8000
-  ///
-  /// In production, set this to your deployed backend URL (HTTPS).
+  /// In production, set this via --dart-define=BACKEND_URL=https://...
   static const String baseUrl = String.fromEnvironment(
     'BACKEND_URL',
     defaultValue: 'http://127.0.0.1:8000',
   );
 
+  // Generous defaults: OCR + NER + matching takes ~30s on CPU; quick
+  // metadata endpoints get a much shorter timeout.
+  static const Duration _scanTimeout = Duration(seconds: 180);
+  static const Duration _quickTimeout = Duration(seconds: 15);
+  static const Duration _mediumTimeout = Duration(seconds: 45);
+
+  // ─── Common request wrapper ──────────────────────────────────────
+
+  static Future<dynamic> _safeRequest(
+    Future<http.Response> Function() send, {
+    Duration timeout = _mediumTimeout,
+    String? path,
+  }) async {
+    try {
+      final resp = await send().timeout(timeout);
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        // Try to surface the FastAPI `detail` / `message` field if present.
+        String message =
+            'Erreur ${resp.statusCode} (${path ?? "API"})';
+        try {
+          final body = jsonDecode(resp.body);
+          if (body is Map) {
+            message = (body['message'] ??
+                    body['detail'] ??
+                    body['error'] ??
+                    message)
+                .toString();
+          }
+        } catch (_) {
+          if (resp.body.isNotEmpty && resp.body.length < 300) {
+            message = '$message — ${resp.body}';
+          }
+        }
+        throw ApiException(message,
+            statusCode: resp.statusCode, path: path);
+      }
+      if (resp.body.isEmpty) return null;
+      try {
+        return jsonDecode(resp.body);
+      } on FormatException catch (e) {
+        throw ApiException(
+          'Réponse JSON invalide du serveur : $e',
+          path: path,
+        );
+      }
+    } on TimeoutException {
+      throw ApiException(
+        'Le serveur ne répond pas (timeout). Vérifie que le backend est démarré.',
+        isTimeout: true,
+        path: path,
+      );
+    } on ApiException {
+      rethrow;
+    } catch (e) {
+      throw ApiException(
+        'Backend injoignable : $e',
+        isNetwork: true,
+        path: path,
+      );
+    }
+  }
+
   /// Send a receipt image to the backend and parse the response.
-  ///
-  /// `imageBytes` is the raw file contents; `filename` is used to set the
-  /// multipart content disposition (and Content-Type via the extension).
   static Future<ScanResult> scan(List<int> imageBytes, String filename) async {
     final uri = Uri.parse('$baseUrl/scan');
-    final request = http.MultipartRequest('POST', uri)
-      ..files.add(http.MultipartFile.fromBytes(
-        'image',
-        imageBytes,
-        filename: filename,
-      ));
-
-    final streamed = await request.send();
-    final response = await http.Response.fromStream(streamed);
-
-    if (response.statusCode != 200) {
-      throw Exception(
-          'Backend error ${response.statusCode}: ${response.body}');
+    Future<http.Response> doSend() async {
+      final request = http.MultipartRequest('POST', uri)
+        ..files.add(http.MultipartFile.fromBytes(
+          'image',
+          imageBytes,
+          filename: filename,
+        ));
+      final streamed = await request.send();
+      return http.Response.fromStream(streamed);
     }
 
-    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    final decoded = await _safeRequest(
+      doSend,
+      timeout: _scanTimeout,
+      path: '/scan',
+    );
+    if (decoded is! Map<String, dynamic>) {
+      throw const ApiException('Réponse /scan inattendue (pas un objet JSON).');
+    }
     return ScanResult.fromJson(decoded);
   }
 
   /// Quick health-check used by the home screen.
   static Future<Map<String, dynamic>> catalogStats() async {
-    final resp = await http.get(Uri.parse('$baseUrl/catalog/stats'));
-    if (resp.statusCode != 200) {
-      throw Exception('Backend unreachable');
-    }
-    return jsonDecode(resp.body) as Map<String, dynamic>;
+    final decoded = await _safeRequest(
+      () => http.get(Uri.parse('$baseUrl/catalog/stats')),
+      timeout: _quickTimeout,
+      path: '/catalog/stats',
+    );
+    return (decoded as Map?)?.cast<String, dynamic>() ?? const {};
   }
 
   /// List of past receipts (summaries, newest first).
   static Future<List<ReceiptSummary>> history() async {
-    final resp = await http.get(Uri.parse('$baseUrl/history'));
-    if (resp.statusCode != 200) {
-      throw Exception('Backend error ${resp.statusCode}');
-    }
-    final list = jsonDecode(resp.body) as List;
+    final decoded = await _safeRequest(
+      () => http.get(Uri.parse('$baseUrl/history')),
+      timeout: _quickTimeout,
+      path: '/history',
+    );
+    final list = (decoded as List?) ?? const [];
     return list
-        .map((e) => ReceiptSummary.fromJson(e as Map<String, dynamic>))
+        .whereType<Map>()
+        .map((e) => ReceiptSummary.fromJson(e.cast<String, dynamic>()))
         .toList();
   }
 
   /// Aggregated stats across stored receipts.
   static Future<HistoryStats> historyStats() async {
-    final resp = await http.get(Uri.parse('$baseUrl/history/stats'));
-    if (resp.statusCode != 200) {
-      throw Exception('Backend error ${resp.statusCode}');
-    }
-    return HistoryStats.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+    final decoded = await _safeRequest(
+      () => http.get(Uri.parse('$baseUrl/history/stats')),
+      timeout: _quickTimeout,
+      path: '/history/stats',
+    );
+    return HistoryStats.fromJson(
+      (decoded as Map?)?.cast<String, dynamic>() ?? const {},
+    );
   }
 
   /// Full details of a stored receipt.
   static Future<ScanResult> historyDetail(String id) async {
-    final resp = await http.get(Uri.parse('$baseUrl/history/$id'));
-    if (resp.statusCode != 200) {
-      throw Exception('Backend error ${resp.statusCode}');
-    }
-    return ScanResult.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+    final decoded = await _safeRequest(
+      () => http.get(Uri.parse('$baseUrl/history/$id')),
+      timeout: _quickTimeout,
+      path: '/history/$id',
+    );
+    return ScanResult.fromJson(
+      (decoded as Map?)?.cast<String, dynamic>() ?? const {},
+    );
   }
 
   /// Send a question to the RAG agent and get an answer.
-  /// `history` carries prior turns so the agent has conversation context.
   static Future<String> chat(
     String question,
     List<Map<String, String>> history,
   ) async {
-    final resp = await http.post(
-      Uri.parse('$baseUrl/chat'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'question': question, 'history': history}),
+    final decoded = await _safeRequest(
+      () => http.post(
+        Uri.parse('$baseUrl/chat'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'question': question, 'history': history}),
+      ),
+      timeout: _mediumTimeout,
+      path: '/chat',
     );
-    if (resp.statusCode != 200) {
-      throw Exception('Backend error ${resp.statusCode}: ${resp.body}');
-    }
-    final data = jsonDecode(resp.body) as Map<String, dynamic>;
+    final data = (decoded as Map?)?.cast<String, dynamic>() ?? const {};
     return (data['answer'] ?? '').toString();
+  }
+
+  // ─── Admin: catalog CRUD ───────────────────────────────────────────
+
+  static Future<ProductPage> listProducts({
+    int page = 1,
+    int pageSize = 20,
+    String q = '',
+    String enseigne = '',
+  }) async {
+    final params = <String, String>{
+      'page': page.toString(),
+      'page_size': pageSize.toString(),
+      if (q.isNotEmpty) 'q': q,
+      if (enseigne.isNotEmpty) 'enseigne': enseigne,
+    };
+    final uri = Uri.parse('$baseUrl/catalog/products')
+        .replace(queryParameters: params);
+    final decoded = await _safeRequest(
+      () => http.get(uri),
+      timeout: _quickTimeout,
+      path: '/catalog/products',
+    );
+    return ProductPage.fromJson(
+      (decoded as Map?)?.cast<String, dynamic>() ?? const {},
+    );
+  }
+
+  static Future<Product> createProduct(Product p) async {
+    final decoded = await _safeRequest(
+      () => http.post(
+        Uri.parse('$baseUrl/catalog/products'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(p.toJsonInput()),
+      ),
+      timeout: _quickTimeout,
+      path: '/catalog/products',
+    );
+    return Product.fromJson(
+      (decoded as Map?)?.cast<String, dynamic>() ?? const {},
+    );
+  }
+
+  static Future<Product> updateProduct(String id, Product p) async {
+    final decoded = await _safeRequest(
+      () => http.put(
+        Uri.parse('$baseUrl/catalog/products/$id'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(p.toJsonInput()),
+      ),
+      timeout: _quickTimeout,
+      path: '/catalog/products/$id',
+    );
+    return Product.fromJson(
+      (decoded as Map?)?.cast<String, dynamic>() ?? const {},
+    );
+  }
+
+  static Future<void> deleteProduct(String id) async {
+    await _safeRequest(
+      () => http.delete(Uri.parse('$baseUrl/catalog/products/$id')),
+      timeout: _quickTimeout,
+      path: '/catalog/products/$id',
+    );
+  }
+
+  // ─── Admin: scraper jobs ───────────────────────────────────────────
+
+  static Future<ScrapeJob> startScrape(String retailer, int maxProducts) async {
+    final decoded = await _safeRequest(
+      () => http.post(
+        Uri.parse('$baseUrl/admin/scrape'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'retailer': retailer, 'max_products': maxProducts}),
+      ),
+      timeout: _quickTimeout,
+      path: '/admin/scrape',
+    );
+    return ScrapeJob.fromJson(
+      (decoded as Map?)?.cast<String, dynamic>() ?? const {},
+    );
+  }
+
+  static Future<ScrapeJob> scrapeStatus(String jobId) async {
+    final uri = Uri.parse('$baseUrl/admin/scrape/status')
+        .replace(queryParameters: {'job_id': jobId});
+    final decoded = await _safeRequest(
+      () => http.get(uri),
+      timeout: _quickTimeout,
+      path: '/admin/scrape/status',
+    );
+    return ScrapeJob.fromJson(
+      (decoded as Map?)?.cast<String, dynamic>() ?? const {},
+    );
   }
 }

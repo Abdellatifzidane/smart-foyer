@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../api/api_client.dart';
 import '../api/models.dart';
 
 class ResultsScreen extends StatelessWidget {
@@ -8,6 +9,21 @@ class ResultsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final receipt = result.receipt;
+
+    // Build a per-item breakdown of "scanned price" vs "best alternative price"
+    // so we can show a global cart-level recap (how much the same basket would
+    // have cost at the cheapest mix of competitors).
+    double altTotal = 0.0;
+    int matchedItems = 0;
+    for (final cmp in result.comparisons) {
+      if (cmp.cheaperAlternatives.isNotEmpty) {
+        altTotal += cmp.cheaperAlternatives.first.price * 1; // qty handled below
+        matchedItems++;
+      } else if (cmp.bestMatchPrice > 0) {
+        altTotal += cmp.bestMatchPrice;
+      }
+    }
+    final scannedHasPrices = receipt.total > 0;
 
     return Scaffold(
       appBar: AppBar(
@@ -25,9 +41,24 @@ class ResultsScreen extends StatelessWidget {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
               children: [
-                _ReceiptHeaderCard(receipt: receipt, ocrConfidence: result.ocrConfidence),
+                if (!result.pipelineOk && result.pipelineErrors.isNotEmpty)
+                  _PipelineErrorBanner(errors: result.pipelineErrors),
+                if (!result.pipelineOk && result.pipelineErrors.isNotEmpty)
+                  const SizedBox(height: 12),
+                if (result.imageUrl.isNotEmpty)
+                  _ReceiptPhotoCard(imageUrl: result.imageUrl),
+                if (result.imageUrl.isNotEmpty) const SizedBox(height: 12),
+                _ReceiptHeaderCard(
+                    receipt: receipt, ocrConfidence: result.ocrConfidence),
                 const SizedBox(height: 16),
-                if (result.totalSavings > 0) _SavingsBanner(amount: result.totalSavings),
+                if (result.totalSavings > 0)
+                  _SavingsBanner(
+                    amount: result.totalSavings,
+                    scannedTotal: scannedHasPrices ? receipt.total : 0,
+                    altTotal: altTotal,
+                    matchedItems: matchedItems,
+                    totalItems: receipt.items.length,
+                  ),
                 const SizedBox(height: 8),
                 const Padding(
                   padding: EdgeInsets.fromLTRB(4, 12, 4, 8),
@@ -54,6 +85,101 @@ class ResultsScreen extends StatelessWidget {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ReceiptPhotoCard extends StatelessWidget {
+  final String imageUrl;
+  const _ReceiptPhotoCard({required this.imageUrl});
+
+  String get _fullUrl => imageUrl.startsWith('http')
+      ? imageUrl
+      : '${ApiClient.baseUrl}$imageUrl';
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFE3E6EB)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          GestureDetector(
+            onTap: () => _openFullScreen(context),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 320),
+              child: Image.network(
+                _fullUrl,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => Container(
+                  height: 120,
+                  alignment: Alignment.center,
+                  child: const Text(
+                    'Image indisponible',
+                    style: TextStyle(color: Color(0xFF8A93A1)),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
+              children: [
+                const Icon(Icons.image_outlined,
+                    size: 16, color: Color(0xFF5C6470)),
+                const SizedBox(width: 6),
+                const Expanded(
+                  child: Text(
+                    'Photo originale du ticket',
+                    style:
+                        TextStyle(fontSize: 12, color: Color(0xFF5C6470)),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () => _openFullScreen(context),
+                  child: const Text('Plein écran'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _openFullScreen(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => _FullScreenImage(url: _fullUrl),
+      ),
+    );
+  }
+}
+
+class _FullScreenImage extends StatelessWidget {
+  final String url;
+  const _FullScreenImage({required this.url});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        iconTheme: const IconThemeData(color: Colors.white),
+      ),
+      body: Center(
+        child: InteractiveViewer(
+          maxScale: 5,
+          child: Image.network(url, fit: BoxFit.contain),
         ),
       ),
     );
@@ -126,10 +252,22 @@ class _ReceiptHeaderCard extends StatelessWidget {
 
 class _SavingsBanner extends StatelessWidget {
   final double amount;
-  const _SavingsBanner({required this.amount});
+  final double scannedTotal;
+  final double altTotal;
+  final int matchedItems;
+  final int totalItems;
+  const _SavingsBanner({
+    required this.amount,
+    required this.scannedTotal,
+    required this.altTotal,
+    required this.matchedItems,
+    required this.totalItems,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final hasComparison =
+        matchedItems > 0 && altTotal > 0 && scannedTotal > 0;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
@@ -137,16 +275,88 @@ class _SavingsBanner extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: const Color(0xFFB6E0CB)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.savings_rounded, color: Color(0xFF1B8A6B)),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              'Économies possibles : ${amount.toStringAsFixed(2)} €',
-              style: const TextStyle(
-                  fontWeight: FontWeight.w700, color: Color(0xFF0E5C45)),
+          Row(
+            children: [
+              const Icon(Icons.savings_rounded, color: Color(0xFF1B8A6B)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Économies possibles : ${amount.toStringAsFixed(2)} €',
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF0E5C45),
+                      fontSize: 15),
+                ),
+              ),
+            ],
+          ),
+          if (hasComparison) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Le même panier ailleurs : ~${altTotal.toStringAsFixed(2)} €  '
+              '(payé : ${scannedTotal.toStringAsFixed(2)} €)',
+              style: const TextStyle(fontSize: 12, color: Color(0xFF0E5C45)),
             ),
+            const SizedBox(height: 2),
+            Text(
+              '$matchedItems / $totalItems produits comparés',
+              style: const TextStyle(fontSize: 11, color: Color(0xFF3A4250)),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _PipelineErrorBanner extends StatelessWidget {
+  final List<String> errors;
+  const _PipelineErrorBanner({required this.errors});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF4E5),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE8C893)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: const [
+              Icon(Icons.warning_amber_rounded, color: Color(0xFFB3640F)),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Analyse partielle',
+                  style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF7A3F00)),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          ...errors.map(
+            (e) => Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                '• $e',
+                style: const TextStyle(
+                    fontSize: 12, color: Color(0xFF7A3F00)),
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Le ticket a été sauvegardé tel quel. Tu peux réessayer ou continuer.',
+            style: TextStyle(fontSize: 11, color: Color(0xFF7A3F00)),
           ),
         ],
       ),
@@ -237,6 +447,15 @@ class _ItemCard extends StatelessWidget {
                       fontSize: 12, fontWeight: FontWeight.w700),
                 ),
               ],
+            ),
+            const SizedBox(height: 2),
+            Padding(
+              padding: const EdgeInsets.only(left: 18),
+              child: Text(
+                'Pertinence : ${(comparison!.bestMatchScore * 100).toStringAsFixed(0)}%',
+                style: const TextStyle(
+                    fontSize: 11, color: Color(0xFF8A93A1)),
+              ),
             ),
           ],
           if (cheapers.isNotEmpty) ...[

@@ -14,19 +14,24 @@ from matching.embeddings import Embedder
 from matching.index import ProductIndex
 
 
-DEFAULT_INPUT = Path(__file__).resolve().parent.parent / "data"
-DEFAULT_OUTPUT = Path(__file__).resolve().parent.parent / "data" / "index" / "catalog"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_INPUT = PROJECT_ROOT / "data" / "scrapes"
+DEFAULT_OUTPUT = PROJECT_ROOT / "data" / "index" / "catalog"
+MANUAL_PRODUCTS_PATH = PROJECT_ROOT / "data" / "manual_products.json"
 
 
 def load_products(input_dir: Path) -> list[dict]:
-    """Load all *.json product files produced by the scrapers."""
+    """Load all *.json product files produced by the scrapers, plus any
+    manually-added products from data/manual_products.json."""
     products = []
     seen = set()
 
-    patterns = ["*_products.json", "all_products_*.json"]
-    files = []
-    for pat in patterns:
-        files.extend(input_dir.glob(pat))
+    files: list[Path] = []
+    if input_dir.exists():
+        for pat in ("*_products.json", "all_products_*.json"):
+            files.extend(input_dir.glob(pat))
+    if MANUAL_PRODUCTS_PATH.exists():
+        files.append(MANUAL_PRODUCTS_PATH)
 
     for path in files:
         with open(path, "r", encoding="utf-8") as f:

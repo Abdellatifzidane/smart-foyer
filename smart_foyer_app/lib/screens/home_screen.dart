@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../api/api_client.dart';
+import 'admin_screen.dart';
+import 'analytics_screen.dart';
 import 'chat_screen.dart';
 import 'history_screen.dart';
 import 'scan_screen.dart';
@@ -22,17 +24,22 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _checkBackend() async {
+    setState(() {
+      _backendStatus = 'Vérification du backend...';
+    });
     try {
       final stats = await ApiClient.catalogStats();
       final total = stats['total'] ?? 0;
+      if (!mounted) return;
       setState(() {
         _backendOk = true;
         _backendStatus = 'Backend OK · $total produits indexés';
       });
-    } catch (_) {
+    } catch (e) {
+      if (!mounted) return;
       setState(() {
         _backendOk = false;
-        _backendStatus = 'Backend injoignable (http://127.0.0.1:8000)';
+        _backendStatus = 'Backend injoignable — tape pour réessayer';
       });
     }
   }
@@ -117,6 +124,29 @@ class _HomeScreenState extends State<HomeScreen> {
                     onPressed: _backendOk
                         ? () => Navigator.of(context).push(
                               MaterialPageRoute(
+                                builder: (_) => const AnalyticsScreen(),
+                              ),
+                            )
+                        : null,
+                    icon: const Icon(Icons.insights_rounded),
+                    label: const Padding(
+                      padding: EdgeInsets.symmetric(
+                          vertical: 12, horizontal: 8),
+                      child: Text('Analytics',
+                          style: TextStyle(fontSize: 15)),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(double.infinity, 52),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: _backendOk
+                        ? () => Navigator.of(context).push(
+                              MaterialPageRoute(
                                 builder: (_) => const ChatScreen(),
                               ),
                             )
@@ -135,28 +165,65 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: _backendOk
+                        ? () => Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => const AdminScreen(),
+                              ),
+                            )
+                        : null,
+                    icon: const Icon(Icons.admin_panel_settings_rounded),
+                    label: const Padding(
+                      padding: EdgeInsets.symmetric(
+                          vertical: 12, horizontal: 8),
+                      child: Text('Administration',
+                          style: TextStyle(fontSize: 15)),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(double.infinity, 52),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                  ),
                   const SizedBox(height: 24),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        _backendOk
-                            ? Icons.check_circle_rounded
-                            : Icons.error_rounded,
-                        size: 16,
-                        color:
-                            _backendOk ? Colors.green : Colors.redAccent,
+                  InkWell(
+                    onTap: _backendOk ? null : _checkBackend,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 6),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            _backendOk
+                                ? Icons.check_circle_rounded
+                                : Icons.error_rounded,
+                            size: 16,
+                            color: _backendOk
+                                ? Colors.green
+                                : Colors.redAccent,
+                          ),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              _backendStatus,
+                              style: const TextStyle(
+                                  fontSize: 12, color: Color(0xFF5C6470)),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                          if (!_backendOk) ...[
+                            const SizedBox(width: 4),
+                            const Icon(Icons.refresh_rounded,
+                                size: 14, color: Colors.redAccent),
+                          ],
+                        ],
                       ),
-                      const SizedBox(width: 6),
-                      Flexible(
-                        child: Text(
-                          _backendStatus,
-                          style: const TextStyle(
-                              fontSize: 12, color: Color(0xFF5C6470)),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ],
               ),

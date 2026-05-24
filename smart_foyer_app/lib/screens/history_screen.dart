@@ -44,6 +44,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
       Navigator.of(context).push(
         MaterialPageRoute(builder: (_) => ResultsScreen(result: scan)),
       );
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.message),
+          backgroundColor: Colors.red.shade700,
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
       Navigator.of(context).pop();
@@ -229,6 +238,13 @@ class _ReceiptTile extends StatelessWidget {
         ? receipt.date
         : _formatDate(receipt.scannedAt);
 
+    final hasImage = receipt.imageUrl.isNotEmpty;
+    final imageFull = hasImage
+        ? (receipt.imageUrl.startsWith('http')
+            ? receipt.imageUrl
+            : '${ApiClient.baseUrl}${receipt.imageUrl}')
+        : null;
+
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4),
       elevation: 0,
@@ -238,11 +254,27 @@ class _ReceiptTile extends StatelessWidget {
       ),
       child: ListTile(
         contentPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-        leading: const CircleAvatar(
-          backgroundColor: Color(0xFFE7F6EF),
-          child: Icon(Icons.store_rounded, color: Color(0xFF1B8A6B)),
-        ),
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        leading: imageFull != null
+            ? ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.network(
+                  imageFull,
+                  width: 44,
+                  height: 56,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => const CircleAvatar(
+                    backgroundColor: Color(0xFFE7F6EF),
+                    child: Icon(Icons.store_rounded,
+                        color: Color(0xFF1B8A6B)),
+                  ),
+                ),
+              )
+            : const CircleAvatar(
+                backgroundColor: Color(0xFFE7F6EF),
+                child:
+                    Icon(Icons.store_rounded, color: Color(0xFF1B8A6B)),
+              ),
         title: Text(label,
             style: const TextStyle(fontWeight: FontWeight.w700)),
         subtitle: Text(

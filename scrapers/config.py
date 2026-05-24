@@ -2,6 +2,7 @@
 
 import logging
 import time
+from pathlib import Path
 
 # ─── Rate Limiting ───────────────────────────────────────────────
 CRAWL_DELAY = 1  # seconds between requests (ethical scraping)
@@ -15,7 +16,9 @@ BROWSER_USER_AGENT = (
 )
 
 # ─── Output ──────────────────────────────────────────────────────
-OUTPUT_DIR = "data"
+# Absolute path so scrapers write to the same place regardless of CWD,
+# and so the FAISS index builder finds them.
+OUTPUT_DIR = str(Path(__file__).resolve().parent.parent / "data" / "scrapes")
 LOG_LEVEL = logging.INFO
 
 # ─── Sitemaps ────────────────────────────────────────────────────

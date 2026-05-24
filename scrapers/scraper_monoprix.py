@@ -26,9 +26,14 @@ import xml.etree.ElementTree as ET
 import cloudscraper
 from bs4 import BeautifulSoup
 
-from config import OUTPUT_DIR, REQUEST_TIMEOUT, get_logger, rate_limit
-from filters import is_food_product
-from models import Product, save_products
+try:
+    from .config import OUTPUT_DIR, REQUEST_TIMEOUT, get_logger, rate_limit
+    from .filters import is_food_product
+    from .models import Product, save_products
+except ImportError:
+    from config import OUTPUT_DIR, REQUEST_TIMEOUT, get_logger, rate_limit
+    from filters import is_food_product
+    from models import Product, save_products
 
 log = get_logger("monoprix")
 
@@ -139,8 +144,15 @@ def extract_category_from_url(url: str) -> str:
     return ""
 
 
-def run(max_products: int = 0, category_filter: str = ""):
-    """Main scraping loop."""
+def run(max_products: int = 0, category_filter: str = "", progress_cb=None):
+    """Main scraping loop.
+
+    Args:
+        max_products: stop after this many products (0 = all).
+        category_filter: only keep URLs containing this keyword.
+        progress_cb: optional callable(int) invoked with the running
+            product count after each successful scrape.
+    """
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     urls = fetch_sitemap_urls()
@@ -172,6 +184,11 @@ def run(max_products: int = 0, category_filter: str = ""):
             rate_limit()
             continue
         products.append(product)
+        if progress_cb is not None:
+            try:
+                progress_cb(len(products))
+            except Exception:
+                pass
         log.info(f"  -> {product.name} | {product.price} EUR | {product.brand}")
         # Incremental save so progress is never lost if the scraper is stopped
         if len(products) % 100 == 0:

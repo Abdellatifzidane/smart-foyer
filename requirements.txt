@@ -11,8 +11,9 @@ paddleocr>=2.7.0
 paddlepaddle>=2.6.0
 Pillow>=10.0.0
 
-# NER (extraction structurée via LLM local)
-ollama>=0.4.0
+# NER + agent IA (extraction structurée + chat via Groq)
+groq>=0.11.0
+python-dotenv>=1.0.0
 
 # Matching sémantique (embeddings + FAISS)
 sentence-transformers>=3.0.0
