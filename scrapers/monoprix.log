@@ -1,0 +1,14 @@
+/Users/issomeli/smart-foyer/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-05-20 13:39:34,303 [monoprix] INFO Fetching sitemap index: https://courses.monoprix.fr/sitemaps/sitemap_index.xml
+2026-05-20 13:39:34,402 [monoprix] INFO Fetching product sitemap: https://courses.monoprix.fr/sitemaps/sitemap-products-part1.xml
+2026-05-20 13:39:35,693 [monoprix] INFO Found 25720 product URLs
+2026-05-20 13:39:35,697 [monoprix] INFO Limited to 5000 products
+2026-05-20 13:39:35,697 [monoprix] INFO [1/5000] https://courses.monoprix.fr/products/yaos-yaourt-à-la-grecque-lit-caramel-4x125g/MPX_3908291
+2026-05-20 13:39:35,983 [monoprix] INFO   -> Yaos Yaourt à la Grecque lit caramel 4x125g | 2.75 EUR | Nestlé
+2026-05-20 13:39:36,989 [monoprix] INFO [2/5000] https://courses.monoprix.fr/products/mamie-nova-paris-brest-praliné-2x90g/MPX_3070253
+2026-05-20 13:39:37,242 [monoprix] INFO   -> Mamie Nova Paris Brest Praliné 2x90g | 2.39 EUR | MAMIE NOVA
+2026-05-20 13:39:38,247 [monoprix] INFO [3/5000] https://courses.monoprix.fr/products/méo-café-en-grains-espresso-1kg/MPX_2321211
+2026-05-20 13:39:38,456 [monoprix] INFO   -> Méo Café En Grains Espresso 1kg | 18.25 EUR | MEO
+2026-05-20 13:39:39,462 [monoprix] INFO [4/5000] https://courses.monoprix.fr/products/croustipate-nouveau-pâte-à-pizza-300g/MPX_6725719
+2026-05-20 13:39:39,699 [monoprix] INFO   -> Croustipate Nouveau pâte à pizza 300g | 2.25 EUR | Croustipate

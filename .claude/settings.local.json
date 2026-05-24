@@ -22,7 +22,8 @@
       "Bash(curl -s https://www.franprix.fr/robots.txt)",
       "Bash(curl -s https://www.coursesu.com/robots.txt)",
       "Bash(curl -I https://www.naturalia.fr/robots.txt)",
-      "Bash(curl -s https://www.intermarche.com/robots.txt)"
+      "Bash(curl -s https://www.intermarche.com/robots.txt)",
+      "Bash(sudo -n apt update)"
     ]
   }
 }
