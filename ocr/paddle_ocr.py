@@ -160,13 +160,47 @@ class ReceiptOCR:
             enable_mkldnn=False,                # oneDNN crashes on Paddle 3.x PIR
         )
 
-    def extract(self, image_path: str) -> OCRResult:
-        """Run OCR on a single image and return structured result."""
+    def extract(
+        self,
+        image_path: str,
+        preprocess: bool = True,
+        min_confidence: float = 0.3,
+    ) -> OCRResult:
+        """Run OCR on a single image and return structured result.
+
+        Args:
+            preprocess: applique un prétraitement conservateur (EXIF, upscale
+                des petites images, contraste + accentuation). Améliore les
+                vraies photos de tickets sans dégrader les images nettes.
+            min_confidence: on ignore les fragments sous ce seuil (bruit OCR)
+                pour ne pas polluer l'étape NER.
+        """
         path = Path(image_path)
         if not path.exists():
             raise FileNotFoundError(f"Image not found: {image_path}")
 
-        raw = self.engine.predict(str(path))
+        ocr_input = str(path)
+        tmp_pre: str | None = None
+        if preprocess:
+            try:
+                import tempfile
+                from ocr.preprocess import preprocess_file
+                fd, tmp_pre = tempfile.mkstemp(suffix=".jpg")
+                os.close(fd)
+                ocr_input = preprocess_file(str(path), tmp_pre)
+            except Exception:
+                # En cas d'échec, on retombe sur l'image d'origine (jamais bloquant)
+                ocr_input = str(path)
+
+        try:
+            raw = self.engine.predict(ocr_input)
+        finally:
+            if tmp_pre:
+                try:
+                    Path(tmp_pre).unlink(missing_ok=True)
+                except OSError:
+                    pass
+
         result = OCRResult(image_path=str(path))
 
         if not raw:
@@ -185,6 +219,9 @@ class ReceiptOCR:
 
             for i, text in enumerate(texts):
                 conf = float(scores[i]) if i < len(scores) else 0.0
+                # Ignore les fragments trop incertains (bruit) et vides
+                if conf < min_confidence or not (text or "").strip():
+                    continue
                 box = boxes[i].tolist() if i < len(boxes) and hasattr(boxes[i], "tolist") else (
                     boxes[i] if i < len(boxes) else []
                 )

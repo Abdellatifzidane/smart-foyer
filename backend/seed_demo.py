@@ -1,90 +1,70 @@
 """
-Seed demo receipts for the SmartFoyer history.
-==============================================
-Generates realistic French grocery receipts in data/receipts/ so the
-history screen and the (upcoming) RAG agent have something to show on a
-fresh install.
+Données de démo rattachées à un compte utilisateur
+==================================================
+Crée (si besoin) un compte de démonstration et lui rattache des tickets
+réalistes, pour que l'historique, les analytics et l'agent IA aient du contenu
+dès l'ouverture — le tout dans la nouvelle base SQLite, isolé par utilisateur.
 
-Each receipt is tagged with "demo": true so it can be purged later:
+  python -m backend.seed_demo                       # compte demo par défaut
+  python -m backend.seed_demo --email moi@x.fr --n 20
+  python -m backend.seed_demo --clear               # purge les tickets démo
 
-  python -m backend.seed_demo            # add demo receipts
-  python -m backend.seed_demo --clear    # remove demo receipts only
-
-Real (user-scanned) receipts are never touched.
+Compte par défaut : demo@smartfoyer.fr / demo1234
+Les vrais tickets (non taggés demo) ne sont jamais supprimés.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import random
-import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-RECEIPTS_DIR = Path(__file__).resolve().parent.parent / "data" / "receipts"
+from backend.auth import hash_password
+from backend.db import Receipt, User, init_db, session_scope
+from backend import receipts_store
 
-# Pool of realistic products grouped by category, with typical price ranges.
+
+DEFAULT_EMAIL = "demo@smartfoyer.fr"
+DEFAULT_PASSWORD = "demo1234"
+
 PRODUCTS = {
     "pates": [("Panzani Penne Rigate 500g", 1.20, 1.80),
               ("Barilla Spaghetti n°5", 1.50, 2.20),
               ("Lustucru Coquillettes 500g", 1.10, 1.60),
-              ("Panzani Pulpe de Tomate Fine", 3.80, 4.40),
-              ("Buitoni Tortellini Ricotta 250g", 2.50, 3.20)],
+              ("Panzani Pulpe de Tomate Fine", 3.80, 4.40)],
     "boulangerie": [("Pain de mie complet 500g", 1.40, 2.10),
                     ("Baguette tradition", 0.95, 1.20),
-                    ("Brioche tranchée", 2.20, 3.10),
-                    ("Pain aux céréales", 1.90, 2.80)],
+                    ("Brioche tranchée", 2.20, 3.10)],
     "produits_laitiers": [("Lait demi-écrémé 1L", 0.95, 1.30),
                           ("Beurre doux 250g", 2.10, 3.20),
-                          ("Crème fraîche 30% 25cl", 1.40, 2.00),
                           ("Yaourts nature x4", 1.80, 2.60),
-                          ("Emmental râpé 200g", 2.20, 3.00),
-                          ("Camembert 250g", 2.30, 3.40)],
+                          ("Emmental râpé 200g", 2.20, 3.00)],
     "viandes_poisson": [("Escalope poulet 500g", 5.50, 7.50),
                         ("Steak haché 5% x4", 5.20, 7.00),
-                        ("Saumon fumé 150g", 4.40, 6.20),
-                        ("Jambon blanc x4 tr", 2.80, 4.10),
-                        ("Filet de cabillaud 300g", 6.10, 8.00)],
+                        ("Jambon blanc x4 tr", 2.80, 4.10)],
     "fruits_legumes": [("Tomates grappe vrac", 0.90, 1.80),
                        ("Bananes vrac", 0.80, 1.40),
                        ("Pommes Gala 1kg", 1.50, 2.40),
-                       ("Avocat à la pièce", 0.90, 1.40),
-                       ("Oignon blanc vrac", 1.00, 1.60),
-                       ("Salade laitue", 1.10, 1.70),
-                       ("Courgettes 1kg", 1.80, 2.80),
-                       ("Carottes 1kg", 1.20, 1.90)],
-    "epicerie": [("Concentré de tomate 140g", 0.90, 1.40),
-                 ("Huile d'olive 75cl", 5.20, 8.00),
+                       ("Salade laitue", 1.10, 1.70)],
+    "epicerie": [("Huile d'olive 75cl", 5.20, 8.00),
                  ("Riz long 1kg", 2.10, 3.10),
-                 ("Lentilles vertes 500g", 1.90, 2.70),
-                 ("Café moulu Carte Noire 250g", 3.20, 4.50),
-                 ("Sucre en poudre 1kg", 1.20, 1.80)],
+                 ("Café moulu Carte Noire 250g", 3.20, 4.50)],
     "boissons": [("Eau minérale 6x1.5L", 2.20, 3.20),
                  ("Jus d'orange 1L", 1.80, 2.80),
                  ("Coca-Cola 1.5L", 1.70, 2.30)],
     "hygiene": [("Dentifrice Signal 75ml", 1.80, 2.50),
-                ("Gel douche 250ml", 2.10, 3.20),
-                ("Shampoing Elseve 250ml", 2.80, 4.20),
-                ("Papier toilette x6", 3.40, 5.20)],
-    "menager": [("Liquide vaisselle 500ml", 1.90, 2.80),
-                ("Lessive liquide 30 lavages", 6.50, 9.20),
-                ("Sopalin x2", 2.10, 3.10)],
+                ("Gel douche 250ml", 2.10, 3.20)],
 }
 
-# Typical receipts per store - dict of (enseigne, baskets_template)
-# Each basket is a list of (category, qty_min, qty_max) telling the recipe.
 STORES = ["Intermarché", "Carrefour", "Monoprix", "Lidl", "Franprix"]
 
 
-def random_basket() -> list[tuple[str, float, int]]:
-    """Pick a realistic grocery basket (5-12 items)."""
+def _random_basket() -> list[tuple[str, float, int]]:
     n = random.randint(5, 12)
     items: list[tuple[str, float, int]] = []
-    # Make sure we sample without immediate duplicates
-    categories = list(PRODUCTS.keys())
+    cats = list(PRODUCTS.keys())
     while len(items) < n:
-        cat = random.choice(categories)
+        cat = random.choice(cats)
         name, lo, hi = random.choice(PRODUCTS[cat])
         if any(name == it[0] for it in items):
             continue
@@ -94,99 +74,80 @@ def random_basket() -> list[tuple[str, float, int]]:
     return items
 
 
-def build_receipt(store: str, when: datetime) -> dict:
-    """Build a fake receipt payload matching the /scan response shape."""
-    items = random_basket()
-    receipt_items = [
+def _build_payload(store: str, when: datetime) -> dict:
+    items = [
         {"name": name, "price": round(price * qty, 2), "quantity": float(qty)}
-        for (name, price, qty) in items
+        for (name, price, qty) in _random_basket()
     ]
-    total = round(sum(it["price"] for it in receipt_items), 2)
-
-    receipt_id = uuid.uuid4().hex[:12]
+    total = round(sum(it["price"] for it in items), 2)
     return {
-        "id": receipt_id,
-        "scanned_at": when.isoformat(),
         "demo": True,
-        "ocr": {
-            "text": "(seed demo - no OCR text)",
-            "avg_confidence": 0.95,
-            "line_count": len(receipt_items),
-        },
-        "receipt": {
-            "enseigne": store,
-            "date": when.strftime("%d/%m/%Y"),
-            "total": total,
-            "items": receipt_items,
-        },
+        "ocr": {"text": "(seed demo)", "avg_confidence": 0.95, "line_count": len(items)},
+        "receipt": {"enseigne": store, "date": when.strftime("%Y-%m-%d"),
+                    "total": total, "items": items},
         "comparisons": [],
         "total_savings": round(random.uniform(0.5, 8.0), 2),
     }
 
 
-def save(payload: dict) -> Path:
-    RECEIPTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = RECEIPTS_DIR / f"{payload['id']}.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    return path
+def _get_or_create_user(db, email: str, password: str) -> User:
+    user = db.query(User).filter(User.email == email).first()
+    if user is None:
+        user = User(email=email, name=email.split("@")[0],
+                    password_hash=hash_password(password))
+        db.add(user)
+        db.flush()
+        print(f"Compte démo créé : {email} / {password}")
+    return user
 
 
-def clear_demo() -> int:
-    """Remove every receipt tagged demo=True. Real scans are kept."""
-    if not RECEIPTS_DIR.exists():
-        return 0
-    removed = 0
-    for path in RECEIPTS_DIR.glob("*.json"):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            continue
-        if data.get("demo") is True:
-            path.unlink()
-            removed += 1
-    return removed
-
-
-def seed(n_receipts: int, days_back: int):
-    """Spread n receipts across the last `days_back` days."""
+def seed(email: str, password: str, n: int, days_back: int) -> None:
     now = datetime.now(timezone.utc)
-    created = []
-    for _ in range(n_receipts):
-        store = random.choice(STORES)
-        offset_days = random.uniform(0, days_back)
-        offset_hours = random.uniform(8, 20)
-        when = now - timedelta(days=offset_days)
-        when = when.replace(hour=int(offset_hours), minute=random.randint(0, 59), second=0, microsecond=0)
-        payload = build_receipt(store, when)
-        path = save(payload)
-        created.append((store, payload["receipt"]["total"], path))
+    with session_scope() as db:
+        user = _get_or_create_user(db, email, password)
+        for _ in range(n):
+            offset = random.uniform(0, days_back)
+            when = (now - timedelta(days=offset)).replace(
+                hour=random.randint(8, 20), minute=random.randint(0, 59),
+                second=0, microsecond=0)
+            payload = _build_payload(random.choice(STORES), when)
+            rid, _ = receipts_store.save_receipt(db, user, payload)
+            # Aligne scanned_at sur la date simulée
+            rec = db.get(Receipt, rid)
+            if rec:
+                rec.scanned_at = when
+        print(f"{n} tickets démo ajoutés pour {email}.")
 
-    created.sort(key=lambda x: x[2].stat().st_mtime, reverse=True)
-    print(f"Created {len(created)} demo receipts in {RECEIPTS_DIR}")
-    by_store: dict[str, int] = {}
-    for store, _, _ in created:
-        by_store[store] = by_store.get(store, 0) + 1
-    print("Repartition :")
-    for store, count in sorted(by_store.items()):
-        print(f"  {store:<14} {count} tickets")
+
+def clear(email: str) -> None:
+    with session_scope() as db:
+        user = db.query(User).filter(User.email == email).first()
+        if user is None:
+            print(f"Aucun compte {email}.")
+            return
+        removed = 0
+        for rec in db.query(Receipt).filter(Receipt.user_id == user.id).all():
+            if rec.payload().get("demo") is True:
+                db.delete(rec)
+                removed += 1
+        print(f"{removed} tickets démo supprimés pour {email}. Les vrais sont gardés.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Seed/clear demo receipts")
-    parser.add_argument("--n", type=int, default=15, help="Number of demo receipts to create")
-    parser.add_argument("--days", type=int, default=90, help="Spread over the last N days")
-    parser.add_argument("--clear", action="store_true", help="Remove demo receipts only")
+    parser = argparse.ArgumentParser(description="Seed/clear demo receipts (per user)")
+    parser.add_argument("--email", default=DEFAULT_EMAIL)
+    parser.add_argument("--password", default=DEFAULT_PASSWORD)
+    parser.add_argument("--n", type=int, default=18)
+    parser.add_argument("--days", type=int, default=90)
+    parser.add_argument("--clear", action="store_true")
     args = parser.parse_args()
 
+    init_db()
     if args.clear:
-        n = clear_demo()
-        print(f"Removed {n} demo receipts. Real scans were kept.")
-        return
-
-    random.seed()  # truly random
-    seed(args.n, args.days)
+        clear(args.email)
+    else:
+        random.seed()
+        seed(args.email, args.password, args.n, args.days)
 
 
 if __name__ == "__main__":

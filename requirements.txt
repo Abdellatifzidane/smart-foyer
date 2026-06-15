@@ -15,12 +15,20 @@ Pillow>=10.0.0
 groq>=0.11.0
 python-dotenv>=1.0.0
 
-# Matching sémantique (embeddings + FAISS)
+# Matching sémantique (embeddings + FAISS + re-ranking lexical)
 sentence-transformers>=3.0.0
 faiss-cpu>=1.8.0
 numpy>=1.26.0
+rapidfuzz>=3.9.0
 
 # Backend API (Flutter <-> Python pipeline)
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.20
+
+# Auth (Google OAuth + email/mot de passe + JWT) & persistance
+sqlalchemy>=2.0.0
+python-jose[cryptography]>=3.3.0
+bcrypt>=4.1.0
+google-auth>=2.30.0
+email-validator>=2.1.0

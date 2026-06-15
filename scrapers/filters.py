@@ -53,15 +53,40 @@ NON_FOOD_KEYWORDS = {
     "outil", "tournevis", "marteau", "scie", "perceuse",
     "echelle", "échelle", "tuyau", "tondeuse",
     "tente", "transat", "parasol", "hamac", "balancelle",
-    # ── jouets / enfant ──
+    # ── jouets / enfant / loisirs ──
     "jouet", "jouets", "poupee", "poupée", "peluche",
     "poussette", "biberon", "lit bebe", "lit bébé", "siege auto", "siège auto",
     "trottinette", "velo", "vélo",
+    "pistolet", "piste a billes", "piste à billes", "billes", "puzzle",
+    "trampoline", "piscine", "gonflable", "deguisement", "déguisement",
+    "cerf-volant", "cerf volant", "drone", "circuit voiture", "figurine",
+    "jeu de societe", "jeu de société", "coloriage", "pataugeoire",
     # ── papeterie / informatique ──
     "stylo", "cahier", "classeur", "agenda", "feutre",
     "imprimante", "cartouche", "clavier", "souris", "casque",
+    # ── cosmétiques / maquillage ──
+    "maquillage", "make up", "make-up", "rouge a levres", "rouge à lèvres",
+    "mascara", "fond de teint", "ombre a paupiere", "ombre à paupière",
+    "vernis", "fard", "anticerne", "anti-cerne", "blush", "eyeliner",
+    "crayon yeux", "poudre libre", "highlighter", "demaquillant", "démaquillant",
+    "parfum", "eau de toilette", "eau de parfum", "cologne",
+    # ── soin / parapharmacie ──
+    "creme visage", "crème visage", "creme anti", "crème anti", "soin visage",
+    "soin contour", "serum", "sérum", "lotion", "tonique", "gommage",
+    "masque visage", "creme mains", "crème mains", "creme corps", "crème corps",
+    "shampoing", "shampooing", "apres-shampoing", "après-shampoing",
+    "apres shampoing", "soin cheveux", "laque", "gel coiffant", "cire cheveux",
+    "coloration", "teinture", "vitamine", "complement alimentaire",
+    "complément alimentaire", "gelule", "gélule", "comprime", "comprimé",
+    "pansement", "compresse", "serum physiologique", "spray nasal",
+    "creme solaire", "crème solaire", "autobronzant", "epilation", "épilation",
+    "cire epil", "cire épil", "rasoir", "mousse a raser", "mousse à raser",
+    "deodorant", "déodorant", "anti-transpirant", "antitranspirant",
+    "manucure", "pedicure", "pédicure", "lime a ongles", "lime à ongles",
+    "coton tige", "coton-tige", "lingette demaquillante",
     # ── divers non-alimentaire ──
-    "vetement", "vêtement",
+    "vetement", "vêtement", "bijou", "montre", "lunettes",
+    "set manucure", "trousse",
 }
 
 

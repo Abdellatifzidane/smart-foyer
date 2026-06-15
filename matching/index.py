@@ -31,6 +31,7 @@ import faiss
 import numpy as np
 
 from matching.embeddings import Embedder
+from matching.normalize import embed_text as _embed_text
 
 
 @dataclass
@@ -90,7 +91,7 @@ class ProductIndex:
 
         names = [_product_text(p) for p in products]
         print(f"Encoding {len(names)} products...")
-        vectors = embedder.encode(names)
+        vectors = embedder.encode(names, kind="passage")
 
         # Inner product with normalized vectors == cosine similarity
         index = faiss.IndexFlatIP(embedder.dim)
@@ -150,7 +151,7 @@ class ProductIndex:
 
         # ProductIndex is the live source of truth; appended row = current ntotal
         row = self.index.ntotal
-        vec = self.embedder.encode_one(_product_text(product))
+        vec = self.embedder.encode_one(_product_text(product), kind="passage")
         self.index.add(vec)
         self.products.append(product)
         self.id_to_row[pid] = row
@@ -191,7 +192,7 @@ class ProductIndex:
         if new_text != old_text:
             # Embedding changed → append a new FAISS row, drop the old mapping
             new_row = self.index.ntotal
-            vec = self.embedder.encode_one(new_text)
+            vec = self.embedder.encode_one(new_text, kind="passage")
             self.index.add(vec)
             self.id_to_row[pid] = new_row
 
@@ -220,7 +221,7 @@ class ProductIndex:
         if not query.strip() or self.index.ntotal == 0:
             return []
 
-        vector = self.embedder.encode_one(query)
+        vector = self.embedder.encode_one(query, kind="query")
         # Over-fetch a bit so tombstoned hits don't shrink the result set
         scores, indices = self.index.search(vector, max(k * 2, k + 5))
 
@@ -248,12 +249,9 @@ class ProductIndex:
 
 
 def _product_text(product: dict) -> str:
-    """Build the embedding input from a product dict.
+    """Build the embedding input from a product dict (normalized name + brand).
 
-    We combine name + brand to give the model more context.
+    Normalisation = développement des abréviations + retrait des accents, pour
+    aligner la forme catalogue sur la forme ticket.
     """
-    parts = [product.get("name", "")]
-    brand = product.get("brand", "")
-    if brand and brand.lower() not in (parts[0] or "").lower():
-        parts.append(brand)
-    return " ".join(p for p in parts if p).strip()
+    return _embed_text(product.get("name", ""), product.get("brand", ""))

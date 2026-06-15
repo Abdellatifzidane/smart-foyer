@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'auth_service.dart';
 import 'models.dart';
 
 /// Structured API error — never let raw `Exception` bubble up to the UI.
@@ -46,6 +47,28 @@ class ApiClient {
   static const Duration _quickTimeout = Duration(seconds: 15);
   static const Duration _mediumTimeout = Duration(seconds: 45);
 
+  /// URL absolue d'un média (image ticket) avec le JWT en query param, car
+  /// les balises <img>/Image.network ne peuvent pas porter d'en-tête.
+  static String mediaUrl(String relative) {
+    if (relative.isEmpty) return relative;
+    final base = relative.startsWith('http') ? relative : '$baseUrl$relative';
+    final token = AuthService.instance.token;
+    if (token == null || token.isEmpty) return base;
+    final sep = base.contains('?') ? '&' : '?';
+    return '$base${sep}token=$token';
+  }
+
+  // ─── Auth header ─────────────────────────────────────────────────
+  /// En-têtes communs incluant le JWT applicatif s'il existe. Toute requête
+  /// passe par ici, donc le backend reçoit toujours l'identité du user.
+  static Map<String, String> authHeaders([Map<String, String>? extra]) {
+    final token = AuthService.instance.token;
+    return {
+      if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+      if (extra != null) ...extra,
+    };
+  }
+
   // ─── Common request wrapper ──────────────────────────────────────
 
   static Future<dynamic> _safeRequest(
@@ -55,6 +78,13 @@ class ApiClient {
   }) async {
     try {
       final resp = await send().timeout(timeout);
+      // Session expirée / token invalide : on déconnecte proprement, l'AuthGate
+      // renvoie alors vers l'écran de connexion.
+      if (resp.statusCode == 401) {
+        unawaited(AuthService.instance.logout());
+        throw ApiException('Session expirée, reconnecte-toi.',
+            statusCode: 401, path: path);
+      }
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         // Try to surface the FastAPI `detail` / `message` field if present.
         String message =
@@ -107,6 +137,7 @@ class ApiClient {
     final uri = Uri.parse('$baseUrl/scan');
     Future<http.Response> doSend() async {
       final request = http.MultipartRequest('POST', uri)
+        ..headers.addAll(authHeaders())
         ..files.add(http.MultipartFile.fromBytes(
           'image',
           imageBytes,
@@ -130,7 +161,7 @@ class ApiClient {
   /// Quick health-check used by the home screen.
   static Future<Map<String, dynamic>> catalogStats() async {
     final decoded = await _safeRequest(
-      () => http.get(Uri.parse('$baseUrl/catalog/stats')),
+      () => http.get(Uri.parse('$baseUrl/catalog/stats'), headers: authHeaders()),
       timeout: _quickTimeout,
       path: '/catalog/stats',
     );
@@ -140,7 +171,7 @@ class ApiClient {
   /// List of past receipts (summaries, newest first).
   static Future<List<ReceiptSummary>> history() async {
     final decoded = await _safeRequest(
-      () => http.get(Uri.parse('$baseUrl/history')),
+      () => http.get(Uri.parse('$baseUrl/history'), headers: authHeaders()),
       timeout: _quickTimeout,
       path: '/history',
     );
@@ -151,10 +182,19 @@ class ApiClient {
         .toList();
   }
 
+  /// Delete one of the current user's receipts.
+  static Future<void> deleteReceipt(String id) async {
+    await _safeRequest(
+      () => http.delete(Uri.parse('$baseUrl/history/$id'), headers: authHeaders()),
+      timeout: _quickTimeout,
+      path: '/history/$id',
+    );
+  }
+
   /// Aggregated stats across stored receipts.
   static Future<HistoryStats> historyStats() async {
     final decoded = await _safeRequest(
-      () => http.get(Uri.parse('$baseUrl/history/stats')),
+      () => http.get(Uri.parse('$baseUrl/history/stats'), headers: authHeaders()),
       timeout: _quickTimeout,
       path: '/history/stats',
     );
@@ -166,7 +206,7 @@ class ApiClient {
   /// Full details of a stored receipt.
   static Future<ScanResult> historyDetail(String id) async {
     final decoded = await _safeRequest(
-      () => http.get(Uri.parse('$baseUrl/history/$id')),
+      () => http.get(Uri.parse('$baseUrl/history/$id'), headers: authHeaders()),
       timeout: _quickTimeout,
       path: '/history/$id',
     );
@@ -183,7 +223,7 @@ class ApiClient {
     final decoded = await _safeRequest(
       () => http.post(
         Uri.parse('$baseUrl/chat'),
-        headers: {'Content-Type': 'application/json'},
+        headers: authHeaders({'Content-Type': 'application/json'}),
         body: jsonEncode({'question': question, 'history': history}),
       ),
       timeout: _mediumTimeout,
@@ -210,7 +250,7 @@ class ApiClient {
     final uri = Uri.parse('$baseUrl/catalog/products')
         .replace(queryParameters: params);
     final decoded = await _safeRequest(
-      () => http.get(uri),
+      () => http.get(uri, headers: authHeaders()),
       timeout: _quickTimeout,
       path: '/catalog/products',
     );
@@ -223,7 +263,7 @@ class ApiClient {
     final decoded = await _safeRequest(
       () => http.post(
         Uri.parse('$baseUrl/catalog/products'),
-        headers: {'Content-Type': 'application/json'},
+        headers: authHeaders({'Content-Type': 'application/json'}),
         body: jsonEncode(p.toJsonInput()),
       ),
       timeout: _quickTimeout,
@@ -238,7 +278,7 @@ class ApiClient {
     final decoded = await _safeRequest(
       () => http.put(
         Uri.parse('$baseUrl/catalog/products/$id'),
-        headers: {'Content-Type': 'application/json'},
+        headers: authHeaders({'Content-Type': 'application/json'}),
         body: jsonEncode(p.toJsonInput()),
       ),
       timeout: _quickTimeout,
@@ -251,7 +291,7 @@ class ApiClient {
 
   static Future<void> deleteProduct(String id) async {
     await _safeRequest(
-      () => http.delete(Uri.parse('$baseUrl/catalog/products/$id')),
+      () => http.delete(Uri.parse('$baseUrl/catalog/products/$id'), headers: authHeaders()),
       timeout: _quickTimeout,
       path: '/catalog/products/$id',
     );
@@ -263,7 +303,7 @@ class ApiClient {
     final decoded = await _safeRequest(
       () => http.post(
         Uri.parse('$baseUrl/admin/scrape'),
-        headers: {'Content-Type': 'application/json'},
+        headers: authHeaders({'Content-Type': 'application/json'}),
         body: jsonEncode({'retailer': retailer, 'max_products': maxProducts}),
       ),
       timeout: _quickTimeout,
@@ -278,7 +318,7 @@ class ApiClient {
     final uri = Uri.parse('$baseUrl/admin/scrape/status')
         .replace(queryParameters: {'job_id': jobId});
     final decoded = await _safeRequest(
-      () => http.get(uri),
+      () => http.get(uri, headers: authHeaders()),
       timeout: _quickTimeout,
       path: '/admin/scrape/status',
     );

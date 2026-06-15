@@ -31,6 +31,49 @@ class _HistoryScreenState extends State<HistoryScreen> {
     setState(() => _future = Future.value(data));
   }
 
+  Future<void> _deleteReceipt(ReceiptSummary r) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Supprimer ce ticket ?'),
+        content: Text(
+          'Le ticket ${r.enseigne.isEmpty ? '' : '${r.enseigne} '}'
+          '(${r.total.toStringAsFixed(2)} €) sera définitivement supprimé.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annuler'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Supprimer'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await ApiClient.deleteReceipt(r.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Ticket supprimé')),
+      );
+      await _refresh();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message), backgroundColor: Colors.red.shade700),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur : $e')),
+      );
+    }
+  }
+
   Future<void> _openReceipt(String id) async {
     showDialog(
       context: context,
@@ -119,6 +162,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         (r) => _ReceiptTile(
                           receipt: r,
                           onTap: () => _openReceipt(r.id),
+                          onDelete: () => _deleteReceipt(r),
                         ),
                       ),
                     ],
@@ -221,7 +265,12 @@ class _StatsCard extends StatelessWidget {
 class _ReceiptTile extends StatelessWidget {
   final ReceiptSummary receipt;
   final VoidCallback onTap;
-  const _ReceiptTile({required this.receipt, required this.onTap});
+  final VoidCallback onDelete;
+  const _ReceiptTile({
+    required this.receipt,
+    required this.onTap,
+    required this.onDelete,
+  });
 
   String _formatDate(String iso) {
     if (iso.isEmpty) return '';
@@ -239,11 +288,7 @@ class _ReceiptTile extends StatelessWidget {
         : _formatDate(receipt.scannedAt);
 
     final hasImage = receipt.imageUrl.isNotEmpty;
-    final imageFull = hasImage
-        ? (receipt.imageUrl.startsWith('http')
-            ? receipt.imageUrl
-            : '${ApiClient.baseUrl}${receipt.imageUrl}')
-        : null;
+    final imageFull = hasImage ? ApiClient.mediaUrl(receipt.imageUrl) : null;
 
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4),
@@ -281,12 +326,34 @@ class _ReceiptTile extends StatelessWidget {
           '$date · ${receipt.nItems} produits',
           style: const TextStyle(fontSize: 12, color: Color(0xFF5C6470)),
         ),
-        trailing: Text(
-          '${receipt.total.toStringAsFixed(2)} €',
-          style: const TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w800,
-              color: Color(0xFF1B8A6B)),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '${receipt.total.toStringAsFixed(2)} €',
+              style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF1B8A6B)),
+            ),
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert, color: Color(0xFF8A93A1)),
+              tooltip: 'Options',
+              onSelected: (v) {
+                if (v == 'delete') onDelete();
+              },
+              itemBuilder: (_) => const [
+                PopupMenuItem<String>(
+                  value: 'delete',
+                  child: Row(children: [
+                    Icon(Icons.delete_outline, size: 18, color: Colors.red),
+                    SizedBox(width: 8),
+                    Text('Supprimer'),
+                  ]),
+                ),
+              ],
+            ),
+          ],
         ),
         onTap: onTap,
       ),
