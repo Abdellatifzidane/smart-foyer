@@ -12,6 +12,7 @@ from pathlib import Path
 
 from matching.embeddings import Embedder
 from matching.index import ProductIndex
+from scrapers.filters import is_food_product
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -53,6 +54,10 @@ def load_products(input_dir: Path) -> list[dict]:
             except (TypeError, ValueError):
                 price = 0.0
             if price <= 0:
+                continue
+            # Re-filtre non-food au build (les scrapes peuvent dater d'avant
+            # l'enrichissement de la liste de mots-clés).
+            if not is_food_product(p.get("name", "")):
                 continue
             seen.add(key)
             products.append(p)

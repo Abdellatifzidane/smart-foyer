@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../api/api_client.dart';
+import '../api/auth_service.dart';
 import 'admin_screen.dart';
 import 'analytics_screen.dart';
 import 'chat_screen.dart';
@@ -46,8 +47,37 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final user = AuthService.instance.user;
+    final displayName = (user?['name'] ?? user?['email'] ?? '').toString();
     return Scaffold(
-      appBar: AppBar(title: const Text('SmartFoyer')),
+      appBar: AppBar(
+        title: const Text('SmartFoyer'),
+        actions: [
+          PopupMenuButton<String>(
+            tooltip: displayName.isEmpty ? 'Compte' : displayName,
+            icon: const Icon(Icons.account_circle_rounded),
+            onSelected: (value) {
+              if (value == 'logout') AuthService.instance.logout();
+            },
+            itemBuilder: (context) => [
+              if (displayName.isNotEmpty)
+                PopupMenuItem<String>(
+                  enabled: false,
+                  child: Text(displayName,
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                ),
+              const PopupMenuItem<String>(
+                value: 'logout',
+                child: Row(children: [
+                  Icon(Icons.logout_rounded, size: 18),
+                  SizedBox(width: 8),
+                  Text('Se déconnecter'),
+                ]),
+              ),
+            ],
+          ),
+        ],
+      ),
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(

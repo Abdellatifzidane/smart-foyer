@@ -1,42 +1,70 @@
 """
 Embeddings wrapper
 ==================
-Converts product names (text) into normalized vectors for similarity search.
+Convertit un nom de produit en vecteur normalisé pour la recherche par
+similarité.
 
-Default model: paraphrase-multilingual-MiniLM-L12-v2
-  - Multilingual (FR + EN + 50+ languages)
-  - 384 dimensions
-  - ~470 MB download (cached after first use)
-  - Fast on CPU
+Modèle par défaut : **intfloat/multilingual-e5-small**
+  - Famille E5, entraînée spécifiquement pour la recherche (retrieval) —
+    nettement plus fiable que paraphrase-MiniLM sur des noms de produits
+    courts et bruités.
+  - Multilingue (FR + 100 langues), 384 dimensions, rapide sur CPU.
+  - Particularité E5 : il faut préfixer le texte par "query: " (côté requête)
+    ou "passage: " (côté catalogue). On le gère automatiquement ici.
+
+Le modèle est configurable via la variable d'environnement EMBED_MODEL.
 """
 
 from __future__ import annotations
+
+import os
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
 
-DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+DEFAULT_MODEL = os.environ.get(
+    "EMBED_MODEL", "intfloat/multilingual-e5-small"
+)
 
 
 class Embedder:
-    """Wraps a sentence-transformers model and returns L2-normalized vectors."""
+    """Encapsule un modèle sentence-transformers et renvoie des vecteurs
+    L2-normalisés (produit scalaire == cosinus)."""
 
     def __init__(self, model_name: str = DEFAULT_MODEL):
         self.model_name = model_name
         self.model = SentenceTransformer(model_name)
-        self.dim = self.model.get_sentence_embedding_dimension()
+        # `get_sentence_embedding_dimension` a été renommé dans les versions
+        # récentes de sentence-transformers ; on tolère les deux.
+        if hasattr(self.model, "get_embedding_dimension"):
+            self.dim = self.model.get_embedding_dimension()
+        else:
+            self.dim = self.model.get_sentence_embedding_dimension()
+        # Les modèles E5 exigent des préfixes "query:"/"passage:".
+        self._needs_prefix = "e5" in model_name.lower()
 
-    def encode(self, texts: list[str], batch_size: int = 64) -> np.ndarray:
-        """
-        Encode a list of texts into a (n, dim) float32 array.
-        Vectors are L2-normalized so inner product == cosine similarity.
+    # ─── Préfixes E5 ───────────────────────────────────────────────
+    def _prep(self, texts: list[str], kind: str) -> list[str]:
+        if not self._needs_prefix:
+            return texts
+        prefix = "query: " if kind == "query" else "passage: "
+        return [prefix + (t or "") for t in texts]
+
+    def encode(
+        self,
+        texts: list[str],
+        kind: str = "passage",
+        batch_size: int = 64,
+    ) -> np.ndarray:
+        """Encode une liste de textes en tableau (n, dim) float32 normalisé.
+
+        kind : "passage" (produits du catalogue) ou "query" (item scanné).
         """
         if not texts:
             return np.zeros((0, self.dim), dtype=np.float32)
-
         vectors = self.model.encode(
-            texts,
+            self._prep(texts, kind),
             batch_size=batch_size,
             convert_to_numpy=True,
             normalize_embeddings=True,
@@ -44,6 +72,7 @@ class Embedder:
         )
         return vectors.astype(np.float32)
 
-    def encode_one(self, text: str) -> np.ndarray:
-        """Encode a single text into a (1, dim) float32 array."""
-        return self.encode([text])
+    def encode_one(self, text: str, kind: str = "query") -> np.ndarray:
+        """Encode un seul texte en tableau (1, dim). Par défaut traité comme
+        une requête (cas d'usage le plus fréquent : recherche)."""
+        return self.encode([text], kind=kind)

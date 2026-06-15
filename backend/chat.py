@@ -62,21 +62,6 @@ REGLES :
 - Quand l'utilisateur demande des conseils, base-toi sur les patterns reels que tu vois dans ses donnees."""
 
 
-def _load_receipts(receipts_dir: Path) -> list[dict]:
-    """Read every stored receipt, newest first."""
-    if not receipts_dir.exists():
-        return []
-    receipts = []
-    for path in receipts_dir.glob("*.json"):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                receipts.append(json.load(f))
-        except (json.JSONDecodeError, OSError):
-            continue
-    receipts.sort(key=lambda r: r.get("scanned_at", ""), reverse=True)
-    return receipts
-
-
 def _aggregate(receipts: list[dict]) -> dict:
     """Compute the aggregate stats used in the context."""
     by_enseigne: dict[str, dict] = defaultdict(lambda: {"total": 0.0, "n": 0})
@@ -115,9 +100,8 @@ def _aggregate(receipts: list[dict]) -> dict:
     }
 
 
-def _build_context(receipts_dir: Path) -> str:
+def _build_context(receipts: list[dict]) -> str:
     """Compose the text block fed to the LLM as factual context."""
-    receipts = _load_receipts(receipts_dir)
     if not receipts:
         return "L'utilisateur n'a encore scanne aucun ticket."
 
@@ -164,21 +148,22 @@ def _build_context(receipts_dir: Path) -> str:
 
 
 def answer(question: str,
-           receipts_dir: Path,
+           receipts: list[dict],
            history: list[dict] | None = None,
            model: str = DEFAULT_MODEL) -> str:
-    """Generate an answer to `question` grounded in the stored receipts.
+    """Generate an answer to `question` grounded in the user's receipts.
 
     Args:
         question: the user's natural-language question (French).
-        receipts_dir: where to read the user's receipts from.
+        receipts: the CURRENT user's receipt payloads (already scoped — the
+            agent never sees another account's data).
         history: optional prior turns [{"role": "user"|"assistant", "content": "..."}]
         model: Groq model name.
 
     Returns:
         The assistant's reply (plain text).
     """
-    context = _build_context(receipts_dir)
+    context = _build_context(receipts)
 
     messages: list[dict] = [
         {"role": "system",

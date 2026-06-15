@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'api/auth_service.dart';
 import 'screens/home_screen.dart';
+import 'screens/login_screen.dart';
 
 /// Global navigator so any background callback / async error can still
 /// reach the user with a SnackBar even if the widget that triggered the
@@ -66,6 +68,7 @@ class SmartFoyerApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       navigatorKey: appNavigatorKey,
       scaffoldMessengerKey: appMessengerKey,
+      home: const AuthGate(),
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
@@ -85,7 +88,39 @@ class SmartFoyerApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const HomeScreen(),
+    );
+  }
+}
+
+/// Décide quel écran afficher selon l'état de connexion. Restaure d'abord la
+/// session (token en stockage local), puis écoute `AuthService.authState`.
+class AuthGate extends StatefulWidget {
+  const AuthGate({super.key});
+
+  @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  bool _ready = false;
+
+  @override
+  void initState() {
+    super.initState();
+    AuthService.instance.bootstrap().whenComplete(() {
+      if (mounted) setState(() => _ready = true);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_ready) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    return ValueListenableBuilder<bool>(
+      valueListenable: AuthService.instance.authState,
+      builder: (context, loggedIn, _) =>
+          loggedIn ? const HomeScreen() : const LoginScreen(),
     );
   }
 }

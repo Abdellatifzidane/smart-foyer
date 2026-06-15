@@ -29,21 +29,35 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+# Le modèle d'embedding (e5) est déjà téléchargé en cache après le premier
+# `build_index`. On force le mode hors-ligne de Hugging Face AU RUNTIME pour que
+# le backend charge le modèle depuis le cache sans jamais toucher le réseau
+# (immunise contre un proxy d'entreprise injoignable / coupure réseau).
+# Surcharge possible : HF_HUB_OFFLINE=0 pour réautoriser le réseau.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 load_dotenv(override=True)
 
+from backend.auth import decode_token, get_current_user
+from backend.auth import router as auth_router
 from backend.chat import answer as chat_answer
+from backend.db import User, db_dependency, init_db
+from backend import receipts_store
 from matching.embeddings import Embedder
 from matching.index import ProductIndex
 from matching.matcher import Matcher
 from ner.extractor import GroqExtractor
-from ocr.paddle_ocr import ReceiptOCR
+# NB : ocr.paddle_ocr (PaddleOCR) est importé PARESSEUSEMENT dans get_ocr() pour
+# que le backend démarre sans la lourde dépendance Paddle (auth/historique OK).
 
 
 MAX_IMAGE_SIDE = 1600  # downscale large photos to limit RAM usage
@@ -69,10 +83,11 @@ _matcher: Matcher | None = None
 _embedder: Embedder | None = None
 
 
-def get_ocr() -> ReceiptOCR:
+def get_ocr():
     global _ocr
     if _ocr is None:
         log.info("Loading PaddleOCR...")
+        from ocr.paddle_ocr import ReceiptOCR  # import paresseux (dépendance lourde)
         _ocr = ReceiptOCR(lang=OCR_LANG)
     return _ocr
 
@@ -124,7 +139,17 @@ def get_or_create_matcher() -> Matcher:
 
 
 # ─── FastAPI app ─────────────────────────────────────────────────────
-app = FastAPI(title="SmartFoyer API", version="0.1.0")
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    init_db()  # crée la base SQLite + les tables
+    log.info("Database initialized.")
+    yield
+
+
+app = FastAPI(title="SmartFoyer API", version="0.2.0", lifespan=_lifespan)
 
 # CORS - allow Flutter web app to call this API from any origin
 app.add_middleware(
@@ -134,6 +159,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Auth (Google OAuth + email/mot de passe + JWT)
+app.include_router(auth_router)
 
 
 # ─── Global error handler ────────────────────────────────────────────
@@ -183,7 +211,11 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 
 @app.post("/scan")
-async def scan(image: UploadFile = File(...)):
+async def scan(
+    image: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(db_dependency),
+):
     """Run the full pipeline on an uploaded image and return the result.
 
     Robust by design: every stage (OCR, NER, matching) is wrapped so a failure
@@ -292,11 +324,11 @@ async def scan(image: UploadFile = File(...)):
             },
         }
         try:
-            receipt_id, image_ext = _save_receipt(response, image_path=tmp_path)
-            response["id"] = receipt_id
-            response["image_url"] = (
-                f"/history/{receipt_id}/image" if image_ext else ""
+            receipt_id, image_url = receipts_store.save_receipt(
+                db, user, response, image_tmp_path=tmp_path
             )
+            response["id"] = receipt_id
+            response["image_url"] = image_url
         except Exception as e:
             log.exception("Saving receipt failed")
             pipeline_errors.append(f"save: {e}")
@@ -312,144 +344,87 @@ async def scan(image: UploadFile = File(...)):
             pass
 
 
-# ─── Receipt history ──────────────────────────────────────────────────
-
-
-def _save_receipt(payload: dict, image_path: str | None = None) -> tuple[str, str]:
-    """Persist a /scan result and the original image.
-
-    Returns (receipt_id, image_ext). image_ext is empty if no image was saved.
-    """
-    RECEIPTS_DIR.mkdir(parents=True, exist_ok=True)
-    RECEIPT_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-    receipt_id = uuid.uuid4().hex[:12]
-    payload["id"] = receipt_id
-
-    # Copy the (possibly downscaled) image alongside the JSON so the user can
-    # later compare the original ticket against the extracted products.
-    image_ext = ""
-    if image_path:
-        src = Path(image_path)
-        if src.exists():
-            ext = src.suffix.lower() or ".jpg"
-            if ext not in _IMAGE_EXTS:
-                ext = ".jpg"
-            dst = RECEIPT_IMAGES_DIR / f"{receipt_id}{ext}"
-            try:
-                dst.write_bytes(src.read_bytes())
-                image_ext = ext
-                payload.setdefault("image_url", f"/history/{receipt_id}/image")
-            except OSError:
-                log.exception("Failed to save receipt image")
-
-    path = RECEIPTS_DIR / f"{receipt_id}.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    log.info("Receipt saved: %s", path)
-    return receipt_id, image_ext
-
-
-def _receipt_image_path(receipt_id: str) -> Path | None:
-    """Locate the original image for a stored receipt (any supported ext)."""
-    if not RECEIPT_IMAGES_DIR.exists():
-        return None
-    for ext in (".jpg", ".jpeg", ".png", ".webp", ".bmp"):
-        p = RECEIPT_IMAGES_DIR / f"{receipt_id}{ext}"
-        if p.exists():
-            return p
-    return None
-
-
-def _load_all_receipts() -> list[dict]:
-    """Load every persisted receipt, newest first."""
-    if not RECEIPTS_DIR.exists():
-        return []
-    receipts = []
-    for path in RECEIPTS_DIR.glob("*.json"):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                receipts.append(json.load(f))
-        except (json.JSONDecodeError, OSError):
-            continue
-    receipts.sort(key=lambda r: r.get("scanned_at", ""), reverse=True)
-    return receipts
-
-
-def _summarize(receipt: dict) -> dict:
-    """Compact summary used in history listings (without full OCR text)."""
-    r = receipt.get("receipt") or {}
-    rid = receipt.get("id", "")
-    has_image = _receipt_image_path(rid) is not None if rid else False
-    return {
-        "id": rid,
-        "scanned_at": receipt.get("scanned_at", ""),
-        "enseigne": r.get("enseigne", ""),
-        "date": r.get("date", ""),
-        "total": r.get("total", 0.0),
-        "n_items": len(r.get("items") or []),
-        "total_savings": receipt.get("total_savings", 0.0),
-        "image_url": f"/history/{rid}/image" if has_image else "",
-    }
+# ─── Receipt history (scoped per user) ────────────────────────────────
 
 
 @app.get("/history")
-def history():
-    """Return the list of past receipts (summaries, newest first)."""
-    return [_summarize(r) for r in _load_all_receipts()]
+def history(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(db_dependency),
+):
+    """Tickets de l'utilisateur courant (résumés, plus récents d'abord)."""
+    return receipts_store.list_summaries(db, user)
 
 
 @app.get("/history/stats")
-def history_stats():
-    """Aggregate spending across all stored receipts."""
-    receipts = _load_all_receipts()
-    by_enseigne: dict[str, float] = defaultdict(float)
-    by_month: dict[str, float] = defaultdict(float)
-    total_spent = 0.0
-    total_savings = 0.0
-
-    for r in receipts:
-        receipt_data = r.get("receipt") or {}
-        total = float(receipt_data.get("total") or 0)
-        total_spent += total
-        total_savings += float(r.get("total_savings") or 0)
-
-        ens = receipt_data.get("enseigne") or "Inconnu"
-        by_enseigne[ens] += total
-
-        month = (r.get("scanned_at") or "")[:7]  # YYYY-MM
-        if month:
-            by_month[month] += total
-
-    return {
-        "n_receipts": len(receipts),
-        "total_spent": round(total_spent, 2),
-        "total_savings": round(total_savings, 2),
-        "by_enseigne": {k: round(v, 2) for k, v in by_enseigne.items()},
-        "by_month": {k: round(v, 2) for k, v in sorted(by_month.items())},
-        "by_week": _build_weekly_stats(receipts),
-        "by_category": _build_category_stats(receipts),
-    }
+def history_stats(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(db_dependency),
+):
+    """Agrégats de dépenses de l'utilisateur courant."""
+    return receipts_store.history_stats(db, user)
 
 
 @app.get("/history/{receipt_id}")
-def history_detail(receipt_id: str):
-    """Return the full stored payload of a past receipt."""
-    path = RECEIPTS_DIR / f"{receipt_id}.json"
-    if not path.exists():
+def history_detail(
+    receipt_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(db_dependency),
+):
+    """Détail complet d'un ticket — 404 s'il n'appartient pas au user."""
+    payload = receipts_store.get_detail(db, user, receipt_id)
+    if payload is None:
         raise HTTPException(404, detail="Receipt not found")
-    with open(path, "r", encoding="utf-8") as f:
-        payload = json.load(f)
-    # Backfill image_url for receipts saved before this field was introduced
-    if _receipt_image_path(receipt_id) is not None:
-        payload["image_url"] = f"/history/{receipt_id}/image"
     return payload
 
 
+def _user_from_header_or_token(
+    authorization: str | None, token: str | None, db: Session
+) -> User:
+    """Résout l'utilisateur depuis l'en-tête Bearer OU le query param `token`."""
+    raw = None
+    if authorization and authorization.lower().startswith("bearer "):
+        raw = authorization.split(" ", 1)[1].strip()
+    elif token:
+        raw = token.strip()
+    if not raw:
+        raise HTTPException(401, detail="Authentification requise")
+    payload = decode_token(raw)
+    user = db.get(User, payload.get("sub"))
+    if user is None:
+        raise HTTPException(401, detail="Utilisateur introuvable")
+    return user
+
+
+@app.delete("/history/{receipt_id}")
+def delete_history(
+    receipt_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(db_dependency),
+):
+    """Supprime un ticket du user (404 s'il n'existe pas / n'est pas à lui)."""
+    if not receipts_store.delete_receipt(db, user, receipt_id):
+        raise HTTPException(404, detail="Receipt not found")
+    return {"ok": True, "id": receipt_id}
+
+
 @app.get("/history/{receipt_id}/image")
-def history_image(receipt_id: str):
-    """Stream the original ticket photo (so the user can compare it to the
-    extracted products)."""
-    img = _receipt_image_path(receipt_id)
+def history_image(
+    receipt_id: str,
+    token: str | None = None,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(db_dependency),
+):
+    """Photo originale du ticket (uniquement si elle appartient au user).
+
+    Les balises <img> ne peuvent pas porter d'en-tête Authorization : on
+    accepte donc aussi le JWT via le paramètre de requête `?token=...`.
+    """
+    user = _user_from_header_or_token(authorization, token, db)
+    # On vérifie d'abord la propriété en base, puis on sert le fichier.
+    if receipts_store.get_detail(db, user, receipt_id) is None:
+        raise HTTPException(404, detail="Image not found")
+    img = receipts_store.image_path(user.id, receipt_id)
     if img is None:
         raise HTTPException(404, detail="Image not found")
     media_type = {
@@ -460,59 +435,6 @@ def history_image(receipt_id: str):
         ".bmp": "image/bmp",
     }.get(img.suffix.lower(), "application/octet-stream")
     return FileResponse(str(img), media_type=media_type)
-
-
-def _build_weekly_stats(receipts: list[dict]) -> dict[str, float]:
-    """Aggregate spending by ISO week (YYYY-Www) — used by the analytics view."""
-    from datetime import datetime as _dt
-
-    by_week: dict[str, float] = defaultdict(float)
-    for r in receipts:
-        receipt_data = r.get("receipt") or {}
-        total = float(receipt_data.get("total") or 0)
-        # Prefer the receipt's own date, fall back to scanned_at
-        date_str = receipt_data.get("date") or r.get("scanned_at") or ""
-        date_str = date_str[:10]
-        try:
-            d = _dt.fromisoformat(date_str)
-        except ValueError:
-            continue
-        iso_year, iso_week, _ = d.isocalendar()
-        by_week[f"{iso_year}-W{iso_week:02d}"] += total
-    return {k: round(v, 2) for k, v in sorted(by_week.items())}
-
-
-def _build_category_stats(receipts: list[dict]) -> dict[str, float]:
-    """Lightweight spending breakdown by coarse category, inferred from the
-    matched catalog category when available, otherwise from keywords in the
-    product name."""
-    KEYWORDS = {
-        "Boulangerie": ("pain", "baguette", "viennois", "brioche", "croissant"),
-        "Hygiene": ("desinfect", "savon", "dentifrice", "shampoing", "gel"),
-        "Boissons": ("eau", "jus", "soda", "coca", "vin", "biere", "energy"),
-        "Cremerie": ("lait", "yaourt", "fromage", "beurre", "creme"),
-        "Surgele": ("surgele", "glace"),
-        "Charcuterie": ("jambon", "saucisse", "lardon", "pate"),
-        "Sucreries": ("chocolat", "bonbon", "biscuit", "galette", "gateau"),
-        "Fruits/Legumes": ("pomme", "banane", "tomate", "salade", "carotte", "fruit", "legume"),
-        "Non alimentaire": ("ecouteur", "pile", "ampoule", "briquet", "carafe"),
-    }
-
-    by_cat: dict[str, float] = defaultdict(float)
-    for r in receipts:
-        receipt_data = r.get("receipt") or {}
-        for it in receipt_data.get("items") or []:
-            price = float(it.get("price") or 0)
-            if price <= 0:
-                continue
-            name = (it.get("name") or "").lower()
-            matched = "Autres"
-            for cat, kws in KEYWORDS.items():
-                if any(kw in name for kw in kws):
-                    matched = cat
-                    break
-            by_cat[matched] += price
-    return {k: round(v, 2) for k, v in sorted(by_cat.items(), key=lambda kv: -kv[1])}
 
 
 # ─── Conversational agent (RAG) ───────────────────────────────────────
@@ -529,15 +451,20 @@ class ChatRequest(BaseModel):
 
 
 @app.post("/chat")
-def chat(req: ChatRequest):
-    """Answer a free-form question using the stored receipts as context."""
+def chat(
+    req: ChatRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(db_dependency),
+):
+    """Réponse RAG fondée UNIQUEMENT sur les tickets de l'utilisateur courant."""
     if not req.question.strip():
         raise HTTPException(400, detail="Empty question")
 
     try:
+        receipts = receipts_store.load_payloads(db, user)
         reply = chat_answer(
             question=req.question.strip(),
-            receipts_dir=RECEIPTS_DIR,
+            receipts=receipts,
             history=[m.model_dump() for m in req.history],
             model=GROQ_MODEL,
         )
@@ -615,7 +542,7 @@ def list_products(
 
 
 @app.post("/catalog/products")
-def create_product(product: ProductIn):
+def create_product(product: ProductIn, user: User = Depends(get_current_user)):
     """Add a new product to the live FAISS index and persist it."""
     matcher = get_or_create_matcher()
     p_dict = product.model_dump()
@@ -630,7 +557,7 @@ def create_product(product: ProductIn):
 
 
 @app.put("/catalog/products/{product_id}")
-def update_product(product_id: str, product: ProductIn):
+def update_product(product_id: str, product: ProductIn, user: User = Depends(get_current_user)):
     """Update an existing product."""
     matcher = get_matcher()
     if matcher is None:
@@ -646,7 +573,7 @@ def update_product(product_id: str, product: ProductIn):
 
 
 @app.delete("/catalog/products/{product_id}")
-def delete_product(product_id: str):
+def delete_product(product_id: str, user: User = Depends(get_current_user)):
     """Remove a product (tombstoned in FAISS)."""
     matcher = get_matcher()
     if matcher is None:
@@ -709,7 +636,7 @@ def _run_scrape_job(job_id: str, retailer: str, max_products: int) -> None:
 
 
 @app.post("/admin/scrape")
-async def start_scrape(req: ScrapeRequest):
+async def start_scrape(req: ScrapeRequest, user: User = Depends(get_current_user)):
     """Launch a scraper in the background and return a job id."""
     retailer = req.retailer.lower().strip()
     if retailer not in ("lidl", "monoprix"):

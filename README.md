@@ -19,22 +19,71 @@ Les menages francais consacrent en moyenne **500 EUR par mois** aux courses alim
 
 ## Demarrage local rapide
 
-Pre-requis : Python 3.12, Flutter 3.11+, une `.env` avec `GROQ_API_KEY=...` a la racine.
+Pre-requis : Python 3.12, Flutter 3.11+, une `.env` a la racine (voir
+`.env.example`). Renseigne `GROQ_API_KEY` (scan + chat), `GOOGLE_CLIENT_ID`
+(login Google) et un `JWT_SECRET` (genere avec
+`python -c "import secrets; print(secrets.token_urlsafe(48))"`).
+
+### Installation (une seule fois)
 
 ```bash
-# Backend (Terminal 1)
-cd ~/smart-foyer && source .venv/bin/activate
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+cd ~/smart-foyer
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 
-# Frontend Web (Terminal 2)
-cd ~/smart-foyer/smart_foyer_app
-flutter run -d web-server --web-port 5000 --web-hostname 0.0.0.0 \
-  --dart-define=BACKEND_URL=http://localhost:8000
+# Catalogue : scraper Lidl + Monoprix puis construire l'index FAISS
+python scrapers/run_all.py --max-products 1500
+python -m matching.build_index
 
-# Puis ouvrir http://localhost:5000 dans Chrome
+# (Optionnel) compte + tickets de demo : demo@smartfoyer.fr / demo1234
+python -m backend.seed_demo
 ```
 
-Sous WSL, si Chrome (Windows) n'arrive pas a joindre `localhost:8000`, recupere l'IP WSL avec `hostname -I` et passe-la dans `BACKEND_URL=http://<ip-wsl>:8000`.
+### Lancement (2 terminaux)
+
+**Terminal 1 — Backend (FastAPI)**
+
+```bash
+cd ~/smart-foyer
+source .venv/bin/activate
+# Derriere un proxy d'entreprise injoignable (hors VPN), le desactiver d'abord :
+unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+**Terminal 2 — Frontend (Flutter Web)**
+
+```bash
+cd ~/smart-foyer/smart_foyer_app
+unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy   # idem si proxy d'entreprise
+flutter run -d web-server --web-port 5000 --web-hostname 0.0.0.0 \
+  --dart-define=BACKEND_URL=http://localhost:8000 \
+  --dart-define=GOOGLE_CLIENT_ID=13039840346-a095h3rhvtipf7nu4b9qjoourl6rkl97.apps.googleusercontent.com
+```
+
+Puis ouvrir **http://localhost:5000** dans Chrome.
+
+**Connexion** : compte de demo **`demo@smartfoyer.fr` / `demo1234`** (historique +
+analytics deja remplis), ou cree un compte, ou « Continuer avec Google ».
+
+> **Notes**
+> - Le modele d'embedding (e5) est charge depuis le cache local : le backend
+>   tourne sans reseau (`HF_HUB_OFFLINE` est force au runtime). Le **scan** et le
+>   **chat** ont besoin de `GROQ_API_KEY` + reseau.
+> - **Login Google** : `http://localhost:5000` doit etre declare dans les
+>   "Origines JavaScript autorisees" du client OAuth (console Google Cloud). En
+>   cas de souci, l'email + mot de passe fonctionne sans configuration.
+> - Sous WSL, si Chrome (Windows) n'atteint pas `localhost:8000`, recupere l'IP
+>   WSL via `hostname -I` et passe-la dans `--dart-define=BACKEND_URL=http://<ip-wsl>:8000`.
+
+### Tests
+
+```bash
+pytest matching/test_matching_quality.py      # benchmark matching (deterministe)
+pytest matching/test_catalog_integration.py   # matching sur le catalogue scrape
+pytest backend/test_auth_isolation.py         # auth + isolation par utilisateur
+pytest ocr/test_ocr.py                         # OCR (non-regression sur Photos/)
+```
 
 ## Architecture cible (GCP)
 
@@ -76,14 +125,14 @@ Le POC actuel fait tourner toute la pile **en local** (FastAPI + Flutter web) et
 |---|---|---|
 | Frontend | Flutter (Web + iOS) | Flutter (App stores) |
 | Backend HTTP | FastAPI + Uvicorn | Cloud Run |
-| OCR | PaddleOCR 3.x (FR) | Cloud Run |
+| OCR | PaddleOCR 3.x (FR) + prétraitement | Cloud Run |
 | NER / LLM | Groq (llama-3.3-70b) | Vertex AI |
-| Embeddings | sentence-transformers MiniLM multilingual | Vertex AI |
+| Embeddings | sentence-transformers **multilingual-e5-small** | Vertex AI |
 | Vector Search | FAISS (IndexFlatIP) | Vertex AI Vector Search |
-| Persistance tickets | JSON sur disque + image originale | Firestore + Cloud Storage |
-| Catalogue produits | JSONL + FAISS sur disque | BigQuery + Vertex AI |
+| Persistance tickets | **SQLite (SQLAlchemy)** + image par user | Cloud SQL + Cloud Storage |
+| Catalogue produits | JSONL + FAISS sur disque (partagé) | BigQuery + Vertex AI |
 | Scrapers | Python (requests / cloudscraper) | Cloud Scheduler + Cloud Functions |
-| Auth | (POC : aucune) | Firebase Auth |
+| Auth | **Google OAuth + email/mot de passe + JWT** | Cloud + Google Identity |
 | CI/CD | (manuel) | Cloud Build + Artifact Registry |
 
 ## Pipeline de traitement d'un ticket
@@ -107,14 +156,36 @@ Chaque etape est isolee dans un `try/except`. Si l'OCR plante, on continue avec 
 
 Cote Flutter, un `ApiException` typé propage le message d'erreur jusqu'a un SnackBar, et un `ErrorBoundary` global remplace le carre rouge plein ecran par un widget "Cette page a rencontre un probleme — Retour". Une exception ne tue jamais l'app.
 
-## Comparaison de prix (Matching semantique hybride)
+## Comparaison de prix (Matching semantique hybride, robuste cross-enseignes)
 
-1. **Embedding** de la requete (nom du produit scanne) avec `paraphrase-multilingual-MiniLM-L12-v2`.
-2. **Recall dense** : top-30 plus proches voisins par cosinus dans FAISS.
-3. **Filtrage prix > 0** : les produits sans prix (rupture, scrape rate) sont elimines pour ne jamais afficher de "match a 0,00 EUR".
-4. **Re-rank lexical** : Jaccard sur tokens normalises (accents retires, unites detachees, stopwords FR / unites supprimes). Le score final est `0.6 x cosinus + 0.4 x lexical`.
-5. **Seuil hybride** (defaut 0.45) : sous ce score, on retourne "aucune correspondance" plutot qu'un faux match (par ex. "Chocolat NoL galette pain d'epice" vs "Beignet chocolat noisette").
-6. **Alternatives moins cheres** : parmi le top, ceux d'une enseigne differente et strictement moins chers que le best match, top 3 par prix croissant.
+Le defi metier : un meme produit s'ecrit tres differemment sur un ticket
+("LAIT 1/2 ECR 1L") et dans les catalogues Lidl / Monoprix ("Lait demi-ecreme
+UHT 1 L"). La pipeline isole **trois signaux** (`matching/normalize.py`) :
+
+1. **Normalisation** : minuscule + accents retires + **developpement des
+   abreviations** ("ECR"->"ecreme", "CHOCO"->"chocolat", "1/2"->"demi"...), pour
+   aligner ticket et catalogue.
+2. **Recall dense** : top-40 voisins par cosinus, embeddings **multilingual-e5-small**
+   (modele entraine pour la recherche, bien plus fiable que MiniLM sur des noms
+   courts/bruites ; prefixes `query:`/`passage:` automatiques).
+3. **Re-rank hybride** : `0.45 x dense_rescale + 0.55 x lexical`, ou le lexical
+   combine **RapidFuzz** (token_set/sort, robuste aux mots manquants/reordonnes)
+   et un Jaccard sur tokens discriminants. Le cosinus E5 (plage etroite 0.70-0.95)
+   est rescale avant fusion.
+4. **Gate quantite** : la contenance est extraite et normalisee (ml / g, avec
+   multiplicateur pour "6 x 1,5 L"). Un produit dont la taille differe de plus de
+   ~18 % est ecarte -> jamais un 50 cl presente comme equivalent a un 1 L.
+5. **Penalite categorie** : si les deux familles connues different, le score est
+   penalise (evite "chocolat" vs "gel douche au chocolat").
+6. **Seuil** (hybride >= 0.50 et lexical >= 0.22) : sous le seuil, "aucune
+   correspondance" plutot qu'un faux positif.
+7. **Alternatives moins cheres** : uniquement des produits **identiques** (qui
+   passent eux-memes la barre de match) d'une **autre enseigne**, compares au
+   **prix au litre / au kilo** quand la quantite est connue des deux cotes
+   (comparaison equitable). Top 3 par prix croissant.
+
+Un benchmark deterministe (`matching/test_matching_quality.py`) verifie rappel,
+precision (zero faux positif sur des items hors-catalogue) et alternatives.
 
 ## Agent IA (Architecture RAG)
 
@@ -143,23 +214,31 @@ Cote Flutter, un `ApiException` typé propage le message d'erreur jusqu'a un Sna
 - [x] Agent IA conversationnel (RAG sur historique)
 - [x] App Flutter (Scan, Historique, Resultats avec photo, Analytics, Admin, Chat)
 - [x] Robustesse end-to-end (pipeline isolee, ErrorBoundary, retries)
-- [ ] Authentification utilisateur (Firebase Auth)
+- [x] Authentification utilisateur (Google OAuth + email/mot de passe + JWT)
+- [x] Isolation stricte des donnees par compte (SQLite, scoping par user_id)
 - [ ] Deploiement Cloud Run + Vertex AI
 - [ ] Build mobile natif (iOS, Android)
 - [ ] Monitoring + alerting (Cloud Logging / Sentry)
 
 ## Endpoints HTTP principaux
 
+Les routes marquees 🔒 exigent un en-tete `Authorization: Bearer <JWT>` et sont
+**scopees par utilisateur** : un compte ne voit jamais les donnees d'un autre.
+
 | Methode | URL | Description |
 |---|---|---|
 | GET | `/` | Health check |
+| POST | `/auth/register` | Creation de compte email + mot de passe -> JWT |
+| POST | `/auth/login` | Connexion email + mot de passe -> JWT |
+| POST | `/auth/google` | Connexion via un ID token Google -> JWT |
+| GET | `/auth/me` | 🔒 Profil de l'utilisateur courant |
 | GET | `/catalog/stats` | Nombre de produits indexes (FAISS) par enseigne |
-| POST | `/scan` | Upload d'une image -> Receipt + comparisons + `pipeline.errors` |
-| GET | `/history` | Liste des tickets (resumes, plus recent en premier) |
-| GET | `/history/stats` | Agregats : total, par enseigne, par mois, par semaine, par categorie |
-| GET | `/history/{id}` | Detail complet d'un ticket |
-| GET | `/history/{id}/image` | Photo originale du ticket (JPEG/PNG) |
-| POST | `/chat` | Question libre a l'agent IA |
+| POST | `/scan` | 🔒 Upload d'une image -> Receipt + comparisons + `pipeline.errors` |
+| GET | `/history` | 🔒 Tickets du user (resumes, plus recent en premier) |
+| GET | `/history/stats` | 🔒 Agregats : total, par enseigne, mois, semaine, categorie |
+| GET | `/history/{id}` | 🔒 Detail complet d'un ticket du user |
+| GET | `/history/{id}/image` | 🔒 Photo originale (JWT via header ou `?token=`) |
+| POST | `/chat` | 🔒 Question a l'agent IA (contexte = tickets du user) |
 | GET | `/catalog/products` | Liste paginee + filtres (enseigne, recherche) |
 | POST | `/catalog/products` | Ajouter manuellement un produit au catalogue |
 | PUT | `/catalog/products/{id}` | Modifier un produit |

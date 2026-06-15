@@ -10,19 +10,22 @@ class ResultsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final receipt = result.receipt;
 
-    // Build a per-item breakdown of "scanned price" vs "best alternative price"
-    // so we can show a global cart-level recap (how much the same basket would
-    // have cost at the cheapest mix of competitors).
-    double altTotal = 0.0;
+    // Récap panier "au meilleur prix" : pour chaque produit, on prend le prix
+    // payé, ou l'alternative moins chère si elle existe. On ne compte JAMAIS un
+    // produit plus cher que ce qui a été payé.
+    double bestBasket = 0.0;
     int matchedItems = 0;
-    for (final cmp in result.comparisons) {
-      if (cmp.cheaperAlternatives.isNotEmpty) {
-        altTotal += cmp.cheaperAlternatives.first.price * 1; // qty handled below
+    for (int i = 0; i < receipt.items.length; i++) {
+      final paid = receipt.items[i].price;
+      final cmp = i < result.comparisons.length ? result.comparisons[i] : null;
+      if (cmp != null && cmp.cheaperAlternatives.isNotEmpty) {
+        bestBasket += cmp.cheaperAlternatives.first.price;
         matchedItems++;
-      } else if (cmp.bestMatchPrice > 0) {
-        altTotal += cmp.bestMatchPrice;
+      } else {
+        bestBasket += paid;
       }
     }
+    final altTotal = bestBasket;
     final scannedHasPrices = receipt.total > 0;
 
     return Scaffold(
@@ -95,9 +98,7 @@ class _ReceiptPhotoCard extends StatelessWidget {
   final String imageUrl;
   const _ReceiptPhotoCard({required this.imageUrl});
 
-  String get _fullUrl => imageUrl.startsWith('http')
-      ? imageUrl
-      : '${ApiClient.baseUrl}$imageUrl';
+  String get _fullUrl => ApiClient.mediaUrl(imageUrl);
 
   @override
   Widget build(BuildContext context) {
@@ -422,50 +423,34 @@ class _ItemCard extends StatelessWidget {
                 style: TextStyle(fontSize: 12, color: Color(0xFF8A93A1)),
               ),
             ),
+          // Produit reconnu (info de transparence) — SANS prix concurrent, pour
+          // ne jamais afficher un produit plus cher que ce qui a été payé.
           if (hasMatch) ...[
-            const Divider(height: 18),
-            Row(
-              children: [
-                const Icon(Icons.compare_arrows_rounded,
-                    size: 14, color: Color(0xFF1B8A6B)),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: Text(
-                    'Match : ${comparison!.bestMatchEnseigne} · ${comparison!.bestMatchName}',
-                    style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFF0E5C45)),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  '${comparison!.bestMatchPrice.toStringAsFixed(2)} €',
-                  style: const TextStyle(
-                      fontSize: 12, fontWeight: FontWeight.w700),
-                ),
-              ],
-            ),
-            const SizedBox(height: 2),
-            Padding(
-              padding: const EdgeInsets.only(left: 18),
-              child: Text(
-                'Pertinence : ${(comparison!.bestMatchScore * 100).toStringAsFixed(0)}%',
-                style: const TextStyle(
-                    fontSize: 11, color: Color(0xFF8A93A1)),
-              ),
+            const SizedBox(height: 6),
+            Text(
+              'Produit reconnu : ${comparison!.bestMatchName}'
+              ' · pertinence ${(comparison!.bestMatchScore * 100).toStringAsFixed(0)}%',
+              style: const TextStyle(fontSize: 11, color: Color(0xFF8A93A1)),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
             ),
           ],
           if (cheapers.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            const Text(
-              'Moins cher ailleurs :',
-              style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF0E5C45)),
+            const Divider(height: 18),
+            Row(
+              children: [
+                const Icon(Icons.savings_rounded,
+                    size: 14, color: Color(0xFF1B8A6B)),
+                const SizedBox(width: 4),
+                Text(
+                  'Moins cher ailleurs · tu peux économiser '
+                  '${comparison!.savings.toStringAsFixed(2)} €',
+                  style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF0E5C45)),
+                ),
+              ],
             ),
             const SizedBox(height: 6),
             ...cheapers.take(3).map((alt) => Padding(
@@ -494,6 +479,24 @@ class _ItemCard extends StatelessWidget {
                     ],
                   ),
                 )),
+          ],
+          // Produit reconnu mais rien de moins cher ailleurs → bon prix.
+          if (hasMatch && cheapers.isEmpty && item.price > 0) ...[
+            const SizedBox(height: 6),
+            Row(
+              children: const [
+                Icon(Icons.check_circle_rounded,
+                    size: 14, color: Color(0xFF1B8A6B)),
+                SizedBox(width: 4),
+                Text(
+                  'Bon prix : rien de moins cher trouvé ailleurs',
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF0E5C45)),
+                ),
+              ],
+            ),
           ],
         ],
       ),
