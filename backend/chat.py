@@ -7,10 +7,12 @@ uses the context built from the user's actual history.
 
 How it works:
   1. Load all stored receipts.
-  2. Compute aggregate stats (totals, by enseigne, by month).
-  3. Inject a compact text representation of that data as context.
-  4. Send the (system + context + question) prompt to Groq.
-  5. Return the LLM answer.
+  2. Compute aggregate stats (totals, by enseigne, by month) injected as a
+     compact OVERVIEW context (for vague / qualitative questions).
+  3. Expose deterministic TOOLS (see backend/chat_tools.py): for any precise
+     figure the LLM calls a tool, Python computes the exact number, and the
+     LLM only writes the answer around it -> reliable numbers by construction.
+  4. Loop on the model's tool calls, then return the final answer.
 """
 
 from __future__ import annotations
@@ -22,7 +24,9 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from groq import Groq
+from groq import BadRequestError, Groq
+
+from backend.chat_tools import TOOL_SCHEMAS, run_tool
 
 
 load_dotenv(override=True)
@@ -31,6 +35,34 @@ load_dotenv(override=True)
 # ─── Configuration ────────────────────────────────────────────────────
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
 MAX_RECEIPTS_IN_CONTEXT = 25  # keep the prompt small for fast responses
+MAX_TOOL_ROUNDS = 4           # safety cap on chained tool calls
+TOOL_CALL_RETRIES = 2         # llama formule parfois mal un appel d'outil -> on retente
+
+
+def _is_tool_use_failed(err: BadRequestError) -> bool:
+    """Vrai si Groq rejette un appel d'outil mal formé par le modèle."""
+    return "tool_use_failed" in str(err)
+
+
+def _complete(client: Groq, model: str, messages: list[dict], *, use_tools: bool):
+    """Appel Groq robuste. Avec outils, retente quelques fois si le modèle
+    produit un appel mal formé (erreur stochastique). Lève BadRequestError si
+    l'échec persiste pour que l'appelant puisse dégrader proprement."""
+    kwargs = {"model": model, "messages": messages, "temperature": 0.2}
+    if use_tools:
+        kwargs.update(tools=TOOL_SCHEMAS, tool_choice="auto")
+
+    attempts = TOOL_CALL_RETRIES + 1 if use_tools else 1
+    last_err: BadRequestError | None = None
+    for _ in range(attempts):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except BadRequestError as e:
+            if use_tools and _is_tool_use_failed(e):
+                last_err = e
+                continue  # nouvelle tentative : la génération est aléatoire
+            raise
+    raise last_err  # type: ignore[misc]
 
 
 _client: Groq | None = None
@@ -53,13 +85,15 @@ SYSTEM_PROMPT = """Tu es SmartFoyer Conseiller, un assistant financier qui aide 
 
 Tu reponds en francais, de maniere concise (3-6 phrases maximum), claire, et amicale.
 
-Tu as access UNIQUEMENT aux donnees fournies dans la section CONTEXTE ci-dessous. Reponds en te basant strictement sur ces donnees.
+Tu disposes du CONTEXTE ci-dessous (un apercu des donnees du user) ET d'OUTILS qui calculent des chiffres exacts a partir de ses tickets.
 
 REGLES :
-- Cite des montants et enseignes precis quand c'est utile.
-- Si la donnee demandee n'est pas dans le contexte, dis-le honnetement ("Je n'ai pas cette information dans ton historique").
-- Ne donne JAMAIS de chiffres inventes ou approximatifs si ils ne sont pas dans le contexte.
-- Quand l'utilisateur demande des conseils, base-toi sur les patterns reels que tu vois dans ses donnees."""
+- Pour TOUTE question impliquant un montant, un total, un comptage, une moyenne, une periode datee ou une comparaison d'enseignes, tu DOIS appeler un outil pour obtenir le chiffre exact. Ne calcule JAMAIS toi-meme et n'estime jamais a partir de l'apercu.
+- Convertis les periodes relatives ("le mois dernier", "cette semaine") en dates absolues (format AAAA-MM-JJ) en te basant sur la date du jour donnee dans le CONTEXTE, puis passe-les a l'outil.
+- Si un outil renvoie zero resultat ou une erreur, dis-le honnetement ("Je n'ai pas cette information dans ton historique") plutot que d'inventer.
+- Cite des montants et enseignes precis (issus des outils) quand c'est utile.
+- Quand l'utilisateur demande des conseils, appuie-toi sur savings_summary et sur les patterns reels de ses donnees.
+- Ne mentionne JAMAIS que tu utilises un outil, que tu "calcules" ou que tu "consultes les donnees". Ne decris pas ta demarche. Donne directement la reponse finale, comme si tu connaissais deja le chiffre."""
 
 
 def _aggregate(receipts: list[dict]) -> dict:
@@ -167,16 +201,55 @@ def answer(question: str,
 
     messages: list[dict] = [
         {"role": "system",
-         "content": f"{SYSTEM_PROMPT}\n\n=== CONTEXTE ===\n{context}"},
+         "content": f"{SYSTEM_PROMPT}\n\n=== CONTEXTE (apercu) ===\n{context}"},
     ]
     if history:
         # keep the last ~8 turns to limit prompt size
         messages.extend(history[-8:])
     messages.append({"role": "user", "content": question})
 
-    response = _get_client().chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0.2,  # a tiny bit of variety but stays factual
-    )
-    return (response.choices[0].message.content or "").strip()
+    client = _get_client()
+
+    # Boucle de tool-calling : le LLM peut enchaîner plusieurs outils avant
+    # de rédiger sa réponse finale.
+    for _ in range(MAX_TOOL_ROUNDS):
+        try:
+            response = _complete(client, model, messages, use_tools=True)
+        except BadRequestError as e:
+            if _is_tool_use_failed(e):
+                # Le modèle n'arrive pas à formuler d'appel d'outil même après
+                # retries -> on répond sans outils (réponse dégradée mais pas
+                # de 500). Le CONTEXTE injecté permet une réponse approchée.
+                break
+            raise
+        msg = response.choices[0].message
+        if not msg.tool_calls:
+            return (msg.content or "").strip()
+
+        # Rejoue le message d'appel d'outils puis le résultat de chaque outil.
+        messages.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [
+                {"id": tc.id, "type": "function",
+                 "function": {"name": tc.function.name,
+                              "arguments": tc.function.arguments}}
+                for tc in msg.tool_calls
+            ],
+        })
+        for tc in msg.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            result = run_tool(tc.function.name, args, receipts)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": json.dumps(result, ensure_ascii=False),
+            })
+
+    # Garde-fou : rounds d'outils épuisés (ou appel d'outil impossible) ->
+    # réponse finale sans outils.
+    final = _complete(client, model, messages, use_tools=False)
+    return (final.choices[0].message.content or "").strip()

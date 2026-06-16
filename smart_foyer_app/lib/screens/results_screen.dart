@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../api/api_client.dart';
 import '../api/models.dart';
+import '../widgets/feedback_buttons.dart';
 
 class ResultsScreen extends StatelessWidget {
   final ScanResult result;
@@ -53,6 +54,14 @@ class ResultsScreen extends StatelessWidget {
                 if (result.imageUrl.isNotEmpty) const SizedBox(height: 12),
                 _ReceiptHeaderCard(
                     receipt: receipt, ocrConfidence: result.ocrConfidence),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: FeedbackButtons(
+                    target: 'ocr',
+                    label: 'Texte bien lu ?',
+                    receiptId: result.id,
+                  ),
+                ),
                 const SizedBox(height: 16),
                 if (result.totalSavings > 0)
                   _SavingsBanner(
@@ -85,6 +94,17 @@ class ResultsScreen extends StatelessWidget {
                       : null;
                   return _ItemCard(item: item, comparison: cmp);
                 }),
+                if (receipt.items.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: FeedbackButtons(
+                      target: 'matching',
+                      label: 'Correspondances correctes ?',
+                      receiptId: result.id,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

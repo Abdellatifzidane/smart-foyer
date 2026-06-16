@@ -38,6 +38,7 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 from dotenv import load_dotenv
+from groq import RateLimitError
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -50,7 +51,7 @@ load_dotenv(override=True)
 from backend.auth import decode_token, get_current_user
 from backend.auth import router as auth_router
 from backend.chat import answer as chat_answer
-from backend.db import User, db_dependency, init_db
+from backend.db import Feedback, User, db_dependency, init_db
 from backend import receipts_store
 from matching.embeddings import Embedder
 from matching.index import ProductIndex
@@ -468,11 +469,96 @@ def chat(
             history=[m.model_dump() for m in req.history],
             model=GROQ_MODEL,
         )
+    except RateLimitError:
+        # Quota Groq atteint : message clair (HTTP 200) plutôt qu'un 500.
+        log.warning("Chat rate-limited by Groq")
+        return {"answer": "Le service IA est temporairement saturé "
+                          "(limite de requêtes atteinte). Réessaie dans "
+                          "quelques minutes."}
     except Exception as e:
         log.exception("Chat failed")
         raise HTTPException(500, detail=f"Chat error: {e}")
 
     return {"answer": reply}
+
+
+# ─── Feedback (évaluation 👍/👎 : OCR, matching, agent) ──────────────
+_FEEDBACK_TARGETS = {"ocr", "matching", "agent"}
+_FEEDBACK_RATINGS = {"up", "down"}
+
+
+class FeedbackRequest(BaseModel):
+    target: str                 # "ocr" | "matching" | "agent"
+    rating: str                 # "up" | "down"
+    receipt_id: str = ""        # pour ocr / matching
+    question: str = ""          # pour agent
+    answer: str = ""            # pour agent
+    comment: str = ""           # commentaire libre optionnel
+
+
+@app.post("/feedback")
+def submit_feedback(
+    req: FeedbackRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(db_dependency),
+):
+    """Enregistre une évaluation 👍/👎 de l'utilisateur sur un composant."""
+    target = req.target.strip().lower()
+    rating = req.rating.strip().lower()
+    if target not in _FEEDBACK_TARGETS:
+        raise HTTPException(400, detail=f"target invalide : {req.target}")
+    if rating not in _FEEDBACK_RATINGS:
+        raise HTTPException(400, detail=f"rating invalide : {req.rating}")
+
+    fb = Feedback(
+        user_id=user.id,
+        target=target,
+        rating=rating,
+        receipt_id=req.receipt_id.strip(),
+        question=req.question.strip(),
+        answer=req.answer.strip(),
+        comment=req.comment.strip(),
+    )
+    db.add(fb)
+    db.commit()
+    return {"ok": True, "id": fb.id}
+
+
+@app.get("/feedback/stats")
+def feedback_stats(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(db_dependency),
+):
+    """Agrégats 👍/👎 par composant (global, pour évaluer la qualité).
+    Renvoie aussi les derniers commentaires 👎 pour comprendre les erreurs."""
+    rows = db.query(Feedback).all()
+    by_target: dict[str, dict] = {
+        t: {"up": 0, "down": 0} for t in sorted(_FEEDBACK_TARGETS)
+    }
+    for fb in rows:
+        bucket = by_target.setdefault(fb.target, {"up": 0, "down": 0})
+        if fb.rating in bucket:
+            bucket[fb.rating] += 1
+
+    stats = {}
+    for target, counts in by_target.items():
+        total = counts["up"] + counts["down"]
+        stats[target] = {
+            "up": counts["up"],
+            "down": counts["down"],
+            "total": total,
+            "satisfaction_pct": round(counts["up"] / total * 100, 1) if total else None,
+        }
+
+    recent_comments = [
+        {"target": fb.target, "rating": fb.rating, "comment": fb.comment,
+         "created_at": fb.created_at.isoformat() if fb.created_at else ""}
+        for fb in sorted(
+            (f for f in rows if f.comment), key=lambda f: f.created_at or "",
+            reverse=True,
+        )[:20]
+    ]
+    return {"by_target": stats, "recent_comments": recent_comments}
 
 
 # ─── Admin: catalog CRUD ─────────────────────────────────────────────

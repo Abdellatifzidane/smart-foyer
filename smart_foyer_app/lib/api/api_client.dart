@@ -233,6 +233,46 @@ class ApiClient {
     return (data['answer'] ?? '').toString();
   }
 
+  // ─── Feedback (👍/👎 OCR, matching, agent) ─────────────────────────
+
+  /// Enregistre une évaluation 👍/👎 d'un composant. `target` vaut
+  /// 'ocr' | 'matching' | 'agent', `rating` vaut 'up' | 'down'.
+  static Future<void> sendFeedback({
+    required String target,
+    required String rating,
+    String receiptId = '',
+    String question = '',
+    String answer = '',
+    String comment = '',
+  }) async {
+    await _safeRequest(
+      () => http.post(
+        Uri.parse('$baseUrl/feedback'),
+        headers: authHeaders({'Content-Type': 'application/json'}),
+        body: jsonEncode({
+          'target': target,
+          'rating': rating,
+          'receipt_id': receiptId,
+          'question': question,
+          'answer': answer,
+          'comment': comment,
+        }),
+      ),
+      timeout: _quickTimeout,
+      path: '/feedback',
+    );
+  }
+
+  /// Agrégats 👍/👎 par composant (pour la vue stats admin).
+  static Future<Map<String, dynamic>> feedbackStats() async {
+    final decoded = await _safeRequest(
+      () => http.get(Uri.parse('$baseUrl/feedback/stats'), headers: authHeaders()),
+      timeout: _quickTimeout,
+      path: '/feedback/stats',
+    );
+    return (decoded as Map?)?.cast<String, dynamic>() ?? const {};
+  }
+
   // ─── Admin: catalog CRUD ───────────────────────────────────────────
 
   static Future<ProductPage> listProducts({

@@ -17,7 +17,7 @@ class _AdminScreenState extends State<AdminScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
   }
 
   @override
@@ -36,6 +36,7 @@ class _AdminScreenState extends State<AdminScreen>
           tabs: const [
             Tab(icon: Icon(Icons.inventory_2_outlined), text: 'Catalogue'),
             Tab(icon: Icon(Icons.cloud_download_outlined), text: 'Scraping'),
+            Tab(icon: Icon(Icons.thumbs_up_down_outlined), text: 'Feedback'),
           ],
         ),
       ),
@@ -44,6 +45,7 @@ class _AdminScreenState extends State<AdminScreen>
         children: const [
           _CatalogTab(),
           _ScrapingTab(),
+          _FeedbackTab(),
         ],
       ),
     );
@@ -726,6 +728,188 @@ class _ScrapingTabState extends State<_ScrapingTab> {
             ],
           ],
         ],
+      ),
+    );
+  }
+}
+
+// ─── Feedback tab (stats 👍/👎 : OCR, matching, agent) ──────────────────
+
+class _FeedbackTab extends StatefulWidget {
+  const _FeedbackTab();
+
+  @override
+  State<_FeedbackTab> createState() => _FeedbackTabState();
+}
+
+class _FeedbackTabState extends State<_FeedbackTab> {
+  Map<String, dynamic>? _data;
+  bool _loading = false;
+  String? _error;
+
+  static const Map<String, String> _labels = {
+    'ocr': 'OCR (lecture du ticket)',
+    'matching': 'Matching (correspondances prix)',
+    'agent': 'Agent IA (qualité des réponses)',
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _fetch();
+  }
+
+  Future<void> _fetch() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final data = await ApiClient.feedbackStats();
+      if (mounted) setState(() => _data = data);
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading && _data == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null) {
+      return _ErrorRetry(message: _error!, onRetry: _fetch);
+    }
+    final byTarget =
+        (_data?['by_target'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final comments =
+        (_data?['recent_comments'] as List?) ?? const [];
+
+    return RefreshIndicator(
+      onRefresh: _fetch,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          for (final entry in _labels.entries)
+            _FeedbackCard(
+              title: entry.value,
+              stats: (byTarget[entry.key] as Map?)?.cast<String, dynamic>() ??
+                  const {},
+            ),
+          const SizedBox(height: 12),
+          const Text('Derniers commentaires',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          if (comments.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('Aucun commentaire pour le moment.',
+                  style: TextStyle(color: Color(0xFF5C6470))),
+            ),
+          ...comments.whereType<Map>().map((c) {
+            final m = c.cast<String, dynamic>();
+            final isDown = (m['rating'] ?? '') == 'down';
+            return Card(
+              child: ListTile(
+                leading: Icon(
+                  isDown ? Icons.thumb_down : Icons.thumb_up,
+                  color: isDown ? Colors.redAccent : Colors.green,
+                ),
+                title: Text((m['comment'] ?? '').toString()),
+                subtitle: Text(
+                    '${_labels[m['target']] ?? m['target']} · ${(m['created_at'] ?? '').toString().split('T').first}'),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+}
+
+class _FeedbackCard extends StatelessWidget {
+  final String title;
+  final Map<String, dynamic> stats;
+  const _FeedbackCard({required this.title, required this.stats});
+
+  @override
+  Widget build(BuildContext context) {
+    final up = (stats['up'] ?? 0) as int;
+    final down = (stats['down'] ?? 0) as int;
+    final total = (stats['total'] ?? 0) as int;
+    final pct = stats['satisfaction_pct'];
+    final ratio = total > 0 ? up / total : 0.0;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title,
+                style: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: LinearProgressIndicator(
+                value: ratio,
+                minHeight: 10,
+                backgroundColor: const Color(0xFFFFE0E0),
+                valueColor:
+                    const AlwaysStoppedAnimation<Color>(Color(0xFF1B8A6B)),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                const Icon(Icons.thumb_up, size: 16, color: Colors.green),
+                const SizedBox(width: 4),
+                Text('$up'),
+                const SizedBox(width: 16),
+                const Icon(Icons.thumb_down, size: 16, color: Colors.redAccent),
+                const SizedBox(width: 4),
+                Text('$down'),
+                const Spacer(),
+                Text(
+                  pct == null ? 'Pas encore noté' : '$pct % satisfaction',
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w600, color: Color(0xFF5C6470)),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ErrorRetry extends StatelessWidget {
+  final String message;
+  final VoidCallback onRetry;
+  const _ErrorRetry({required this.message, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.error_outline, size: 40, color: Color(0xFF5C6470)),
+            const SizedBox(height: 12),
+            Text(message, textAlign: TextAlign.center),
+            const SizedBox(height: 12),
+            FilledButton(onPressed: onRetry, child: const Text('Réessayer')),
+          ],
+        ),
       ),
     );
   }

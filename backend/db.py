@@ -117,6 +117,25 @@ class ReceiptItem(Base):
     receipt = relationship("Receipt", back_populates="items")
 
 
+class Feedback(Base):
+    """Évaluation 👍/👎 d'un composant par l'utilisateur (OCR, matching, agent)."""
+    __tablename__ = "feedback"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"),
+                     index=True, nullable=False)
+    # Composant évalué : "ocr" | "matching" | "agent".
+    target = Column(String, index=True, nullable=False)
+    # Note : "up" (👍) | "down" (👎).
+    rating = Column(String, nullable=False)
+    # Références facultatives selon la cible :
+    receipt_id = Column(String, default="")   # pour ocr / matching
+    question = Column(Text, default="")        # pour agent
+    answer = Column(Text, default="")          # pour agent
+    comment = Column(Text, default="")         # commentaire libre (surtout sur 👎)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, index=True)
+
+
 # ─── Engine / sessions ───────────────────────────────────────────────
 _engine = None
 _SessionLocal = None

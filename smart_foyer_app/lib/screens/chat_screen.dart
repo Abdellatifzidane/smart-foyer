@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../api/api_client.dart';
+import '../widgets/feedback_buttons.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -103,9 +104,28 @@ class _ChatScreenState extends State<ChatScreen> {
                               return const _TypingBubble();
                             }
                             final m = _messages[i];
-                            return _Bubble(
-                              isUser: m.role == 'user',
-                              text: m.content,
+                            if (m.role == 'user') {
+                              return _Bubble(isUser: true, text: m.content);
+                            }
+                            // Réponse de l'agent : bulle + feedback 👍/👎.
+                            final question =
+                                i > 0 ? _messages[i - 1].content : '';
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                _Bubble(isUser: false, text: m.content),
+                                Padding(
+                                  padding:
+                                      const EdgeInsets.only(left: 4, bottom: 8),
+                                  child: FeedbackButtons(
+                                    key: ValueKey('agentfb_$i'),
+                                    target: 'agent',
+                                    label: 'Réponse utile ?',
+                                    question: question,
+                                    answer: m.content,
+                                  ),
+                                ),
+                              ],
                             );
                           },
                         ),
