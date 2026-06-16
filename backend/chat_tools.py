@@ -317,14 +317,16 @@ def savings_summary(receipts: list[dict], limit: int = 5) -> dict:
 
 @tool(
     description=(
-        "Classe les produits achetés. À utiliser pour 'quel produit m'a coûté "
-        "le plus cher', 'sur quoi je dépense le plus', mes produits les plus "
-        "chers."),
+        "Classe les produits achetés selon une métrique. Choisis le bon "
+        "`metric` selon la question : pour 'quel produit m'a coûté le plus "
+        "cher', 'le produit/l'article le plus cher' -> 'prix_max' ; pour 'sur "
+        "quoi je dépense le plus', 'mon plus gros poste de dépense' -> "
+        "'total_cumule'."),
     parameters={
         "type": "object",
         "properties": {
             "metric": {"type": "string", "enum": ["total_cumule", "prix_max"],
-                       "description": "'total_cumule' = dépense cumulée sur le produit (défaut) ; 'prix_max' = achat ponctuel le plus cher."},
+                       "description": "'prix_max' = le produit dont UN achat a coûté le plus cher (pour 'le produit le plus cher'). 'total_cumule' = somme dépensée sur le produit ; un produit fréquent mais bon marché peut ressortir (pour 'sur quoi je dépense le plus')."},
             # Type permissif (cf. savings_summary) : "5" comme 5, converti par int().
             "limit": {"type": ["integer", "string"],
                       "description": "Nombre de produits à renvoyer (défaut 5)."},
