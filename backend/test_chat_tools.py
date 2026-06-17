@@ -204,6 +204,65 @@ def test_cheapest_place_for_product_not_found():
     assert res["trouve"] is False
 
 
+# ─── category_breakdown ──────────────────────────────────────────────
+def test_category_breakdown():
+    # Boissons : jus 5 + coca 10 = 15 ; Boulangerie : baguette 3 + pain 6 = 9 ;
+    # Cremerie : lait 4 + 2 = 6. Total = 30.
+    res = ct.category_breakdown(RECEIPTS)
+    assert res["total_eur"] == 30.0
+    cats = {c["categorie"]: c for c in res["categories"]}
+    assert cats["Boissons"]["total_eur"] == 15.0
+    assert cats["Boissons"]["part_pct"] == 50.0
+    assert res["categories"][0]["categorie"] == "Boissons"  # trié desc
+
+
+# ─── spending_trend ──────────────────────────────────────────────────
+def test_spending_trend():
+    res = ct.spending_trend(RECEIPTS)
+    serie = {p["mois"]: p["total_eur"] for p in res["par_mois"]}
+    assert serie["2026-03"] == 12.0           # un ticket Lidl
+    assert serie["2026-04"] == 18.0           # 8 + 10
+    assert res["tendance_globale"] == "hausse"
+
+
+# ─── price_evolution ─────────────────────────────────────────────────
+def test_price_evolution_lait():
+    # Lidl 30/03 : 4.0/4 = 1.0 ; Monoprix 10/04 : 2.0/2 = 1.0 -> stable
+    res = ct.price_evolution(RECEIPTS, "lait")
+    assert res["trouve"] is True
+    assert res["nb_points"] == 2
+    assert res["prix_premier_eur"] == 1.0
+    assert res["prix_dernier_eur"] == 1.0
+    assert res["variation_eur"] == 0.0
+
+
+def test_price_evolution_not_found():
+    res = ct.price_evolution(RECEIPTS, "saumon")
+    assert res["trouve"] is False
+
+
+# ─── frequent_products ───────────────────────────────────────────────
+def test_frequent_products():
+    res = ct.frequent_products(RECEIPTS)
+    by = {p["nom"]: p for p in res["produits"]}
+    # le lait est acheté 2 fois (Lidl + Monoprix)
+    assert by["Lait demi-écrémé 1L"]["nb_achats"] == 2
+    assert res["produits"][0]["nb_achats"] == 2  # le plus fréquent en tête
+
+
+# ─── biggest_receipt ─────────────────────────────────────────────────
+def test_biggest_receipt():
+    res = ct.biggest_receipt(RECEIPTS)
+    assert res["trouve"] is True
+    assert res["total_eur"] == 12.0           # le ticket Lidl du 30/03
+    assert res["enseigne"] == "Lidl"
+
+
+def test_biggest_receipt_empty():
+    res = ct.biggest_receipt([])
+    assert res["trouve"] is False
+
+
 # ─── run_tool (dispatcher) ───────────────────────────────────────────
 def test_run_tool_dispatch():
     res = ct.run_tool("compare_enseignes", {}, RECEIPTS)

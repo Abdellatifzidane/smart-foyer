@@ -489,6 +489,174 @@ def cheapest_place_for_product(receipts: list[dict], product_query: str) -> dict
     }
 
 
+@tool(
+    description=(
+        "Répartition des dépenses par catégorie de produit (Boulangerie, "
+        "Boissons, Cremerie...). À utiliser pour 'sur quelle catégorie je "
+        "dépense le plus', 'répartition de mes dépenses'. Période filtrable."),
+    parameters={
+        "type": "object",
+        "properties": {
+            "start_date": {"type": "string", "description": "Début AAAA-MM-JJ. Optionnel."},
+            "end_date": {"type": "string", "description": "Fin AAAA-MM-JJ. Optionnel."},
+        },
+    },
+)
+def category_breakdown(receipts: list[dict], start_date=None, end_date=None) -> dict:
+    """Total dépensé par catégorie de produit + part en %, trié du plus gros au
+    plus petit. La catégorie est devinée depuis le nom (`infer_category`) ;
+    les produits non reconnus tombent dans 'Autres'."""
+    sel = _filter_receipts(receipts, start_date, end_date)
+    by_cat: dict[str, float] = defaultdict(float)
+    for r in sel:
+        for it in (r.get("receipt") or {}).get("items") or []:
+            cat = infer_category(it.get("name") or "") or "Autres"
+            by_cat[cat] += float(it.get("price") or 0)
+    total = sum(by_cat.values())
+    categories = sorted(
+        ({"categorie": k, "total_eur": round(v, 2),
+          "part_pct": round(v / total * 100, 1) if total else 0.0}
+         for k, v in by_cat.items()),
+        key=lambda x: -x["total_eur"],
+    )
+    return {"total_eur": round(total, 2), "categories": categories}
+
+
+@tool(
+    description=(
+        "Évolution des dépenses mois par mois (série chronologique complète). "
+        "À utiliser pour 'comment évoluent mes dépenses', 'est-ce que je "
+        "dépense de plus en plus', 'mon historique de dépenses'."),
+    parameters={"type": "object", "properties": {}},
+)
+def spending_trend(receipts: list[dict]) -> dict:
+    """Total dépensé par mois (AAAA-MM), trié chronologiquement, + une tendance
+    globale (hausse / baisse / stable) entre le premier et le dernier mois."""
+    by_month: dict[str, float] = defaultdict(float)
+    for r in receipts:
+        d = _receipt_date(r)
+        if d:
+            by_month[d.strftime("%Y-%m")] += float((r.get("receipt") or {}).get("total") or 0)
+    serie = [{"mois": m, "total_eur": round(v, 2)}
+             for m, v in sorted(by_month.items())]
+    tendance = None
+    if len(serie) >= 2:
+        diff = serie[-1]["total_eur"] - serie[0]["total_eur"]
+        tendance = "hausse" if diff > 0 else "baisse" if diff < 0 else "stable"
+    return {"par_mois": serie, "tendance_globale": tendance}
+
+
+@tool(
+    description=(
+        "Évolution du prix d'un produit dans le temps, d'après les achats "
+        "(prix par unité = prix de ligne / quantité). À utiliser pour 'le prix "
+        "du lait a-t-il augmenté', 'évolution du prix de X'."),
+    parameters={
+        "type": "object",
+        "properties": {
+            "product_query": {"type": "string", "description": "Mot-clé du produit, ex. 'lait'."},
+        },
+        "required": ["product_query"],
+    },
+)
+def price_evolution(receipts: list[dict], product_query: str) -> dict:
+    """Historique du prix unitaire (prix de ligne / quantité) d'un produit,
+    trié par date, avec la variation entre le premier et le dernier achat.
+    Limité aux produits déjà achetés."""
+    q = normalize_text(product_query or "", drop_quantity=True).strip()
+    if not q:
+        return {"product_query": product_query, "trouve": False, "message": "Requête vide."}
+
+    points = []
+    for r in receipts:
+        receipt = r.get("receipt") or {}
+        ens = (receipt.get("enseigne") or "Inconnu").strip() or "Inconnu"
+        d = _receipt_date(r)
+        date_str = (receipt.get("date") or (r.get("scanned_at") or "")[:10])
+        for it in receipt.get("items") or []:
+            name = it.get("name") or ""
+            if q in normalize_text(name, drop_quantity=True):
+                qty = float(it.get("quantity") or 0) or 1.0
+                unit = round(float(it.get("price") or 0) / qty, 2)
+                points.append({"_d": d or date.min, "date": date_str,
+                               "enseigne": ens, "prix_unitaire_eur": unit})
+    if not points:
+        return {"product_query": product_query, "trouve": False,
+                "message": "Aucun achat de ce produit dans ton historique."}
+
+    points.sort(key=lambda p: p["_d"])
+    for p in points:
+        p.pop("_d", None)
+    premier, dernier = points[0]["prix_unitaire_eur"], points[-1]["prix_unitaire_eur"]
+    return {
+        "product_query": product_query,
+        "trouve": True,
+        "nb_points": len(points),
+        "prix_premier_eur": premier,
+        "prix_dernier_eur": dernier,
+        "variation_eur": round(dernier - premier, 2),
+        "variation_pct": round((dernier - premier) / premier * 100, 1) if premier else None,
+        "historique": points,
+    }
+
+
+@tool(
+    description=(
+        "Produits les plus souvent achetés (par FRÉQUENCE d'achat, pas par "
+        "coût). À utiliser pour 'qu'est-ce que j'achète le plus souvent', 'mes "
+        "habitudes d'achat'."),
+    parameters={
+        "type": "object",
+        "properties": {
+            "limit": {"type": ["integer", "string"], "description": "Nombre de produits (défaut 5)."},
+        },
+    },
+)
+def frequent_products(receipts: list[dict], limit: int = 5) -> dict:
+    """Classe les produits par nombre d'achats (fréquence), avec le total
+    dépensé en complément. Différent de top_products qui classe par coût."""
+    counts: dict[str, dict] = defaultdict(lambda: {"n": 0, "total": 0.0})
+    for r in receipts:
+        for it in (r.get("receipt") or {}).get("items") or []:
+            name = (it.get("name") or "").strip()
+            if not name:
+                continue
+            counts[name]["n"] += 1
+            counts[name]["total"] += float(it.get("price") or 0)
+    rows = sorted(
+        ({"nom": k, "nb_achats": v["n"], "total_eur": round(v["total"], 2)}
+         for k, v in counts.items()),
+        key=lambda x: -x["nb_achats"],
+    )
+    return {"produits": rows[: max(0, int(limit))]}
+
+
+@tool(
+    description=(
+        "Le ticket le plus cher (la plus grosse course). À utiliser pour 'quel "
+        "est mon plus gros ticket', 'ma plus grosse course', 'mon ticket le "
+        "plus cher'."),
+    parameters={"type": "object", "properties": {}},
+)
+def biggest_receipt(receipts: list[dict]) -> dict:
+    """Le ticket dont le total est le plus élevé : date, enseigne, total et
+    nombre de produits."""
+    best = None
+    for r in receipts:
+        receipt = r.get("receipt") or {}
+        total = float(receipt.get("total") or 0)
+        if best is None or total > best["total_eur"]:
+            best = {
+                "date": receipt.get("date") or (r.get("scanned_at") or "")[:10],
+                "enseigne": receipt.get("enseigne") or "Inconnu",
+                "total_eur": round(total, 2),
+                "nb_produits": len(receipt.get("items") or []),
+            }
+    if best is None:
+        return {"trouve": False, "message": "Aucun ticket dans l'historique."}
+    return {"trouve": True, **best}
+
+
 # ─── Dérivés du registre (utilisés par backend/chat.py) ──────────────
 # La liste exposée au LLM et le dispatch sont construits depuis le MÊME
 # registre -> jamais de désynchronisation.
